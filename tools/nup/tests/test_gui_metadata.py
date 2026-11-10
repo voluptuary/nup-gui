@@ -62,7 +62,7 @@ class GuiMetadataTests(unittest.TestCase):
         self.assertEqual((actual.title, actual.publisher, actual.version, actual.icon),
                          ("Manually edited title", "Imported publisher", "5.1", icon))
 
-    def test_copy_dialog_previews_and_verifies_target_without_freezing(self):
+    def test_edit_dialog_previews_and_verifies_target_without_freezing(self):
         original = self.work / "source.nup"
         target = self.work / "target.nup"
         pack(str(original), str(self.source))
@@ -77,7 +77,7 @@ class GuiMetadataTests(unittest.TestCase):
         self.root.update()
         self.assertIsNotNone(dialog.preview_image)
         button = next(widget for widget in dialog.winfo_children()
-                      if widget.winfo_class() == "TButton" and widget.cget("text") == "Copy metadata")
+                      if widget.winfo_class() == "TButton" and widget.cget("text") == "Edit metadata")
         with patch("windows_gui.messagebox.showinfo"), patch("windows_gui.messagebox.showerror") as error:
             button.invoke()
             deadline = time.monotonic() + 5

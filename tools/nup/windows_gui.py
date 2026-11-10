@@ -76,15 +76,16 @@ class NupPackagerApp:
         self.source_button = ttk.Button(root, text="Browse...", command=self.browse_source)
         self.source_button.grid(row=1, column=2, sticky="ew", padx=8, pady=8)
 
-        # Row 2: Buttons on the same row
+        self.metadata_source_label = ttk.Label(root, text="Metadata source")
+        self.metadata_source_label.grid(row=2, column=0, sticky="w", padx=8, pady=4)
         self.buttons_frame = ttk.Frame(root)
-        self.buttons_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=8, pady=4)
+        self.buttons_frame.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(8, 8), pady=4)
         self.import_dump_button = ttk.Button(self.buttons_frame, text="Import from dump", command=self.import_from_dump)
-        self.import_dump_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+        self.import_dump_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
         self.import_nup_button = ttk.Button(self.buttons_frame, text="Import from .nup", command=self.import_from_nup)
-        self.import_nup_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
-        self.copy_nup_button = ttk.Button(self.buttons_frame, text="Import from .nup to .nup", command=self.copy_metadata_nup_to_nup)
-        self.copy_nup_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+        self.import_nup_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(8, 0))
+        self.copy_nup_button = ttk.Button(self.buttons_frame, text="Edit existing .nup metadata", command=self.copy_metadata_nup_to_nup)
+        self.copy_nup_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(8, 0))
 
         self.title_label = ttk.Label(root, text="Game title (optional)")
         self.title_label.grid(row=3, column=0, sticky="w", padx=8, pady=8)
@@ -267,76 +268,159 @@ class NupPackagerApp:
 
     def copy_metadata_nup_to_nup(self) -> None:
         dlg = tk.Toplevel(self.root)
-        dlg.title("Import from .nup to .nup")
-        dlg.geometry("780x360")
-        dlg.minsize(720, 340)
+        dlg.title("Edit existing .nup metadata")
+        dlg.geometry("800x470")
+        dlg.minsize(740, 430)
         dlg.transient(self.root)
         dlg.grab_set()
         dlg.columnconfigure(1, weight=1)
+        dlg.columnconfigure(2, minsize=112)
 
         src_var = tk.StringVar()
         dst_var = tk.StringVar()
+        title_var = tk.StringVar()
+        version_var = tk.StringVar()
+        publisher_var = tk.StringVar()
+        icon_var = tk.StringVar()
+        status_v = tk.StringVar(value="Choose a source package to import from, or edit the selected target.")
 
-        ttk.Label(dlg, text="Source .nup file:").grid(row=0, column=0, sticky="w", padx=10, pady=10)
+        def choose_file(variable: tk.StringVar, title: str) -> None:
+            selected = filedialog.askopenfilename(
+                parent=dlg, title=title,
+                filetypes=(("NUP package", "*.nup"), ("All files", "*.*")))
+            if selected:
+                variable.set(selected)
+
+        ttk.Label(dlg, text="Source .nup file:").grid(row=0, column=0, sticky="w", padx=10, pady=8)
         src_entry = self.bind_entry(ttk.Entry(dlg, textvariable=src_var, width=45))
-        src_entry.grid(row=0, column=1, sticky="ew", padx=10, pady=10)
-        ttk.Button(dlg, text="Browse...", command=lambda: src_var.set(filedialog.askopenfilename(parent=dlg, title="Choose Source .nup", filetypes=(("NUP package", "*.nup"), ("All files", "*.*"))))).grid(row=0, column=2, padx=10, pady=10)
+        src_entry.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
+        ttk.Button(dlg, text="Browse...", command=lambda: choose_file(
+            src_var, "Choose metadata source .nup")).grid(row=0, column=2, padx=8, pady=8)
 
-        ttk.Label(dlg, text="Target .nup file:").grid(row=1, column=0, sticky="w", padx=10, pady=10)
+        ttk.Label(dlg, text="Target .nup file:").grid(row=1, column=0, sticky="w", padx=10, pady=8)
         dst_entry = self.bind_entry(ttk.Entry(dlg, textvariable=dst_var, width=45))
-        dst_entry.grid(row=1, column=1, sticky="ew", padx=10, pady=10)
-        ttk.Button(dlg, text="Browse...", command=lambda: dst_var.set(filedialog.askopenfilename(parent=dlg, title="Choose Target .nup", filetypes=(("NUP package", "*.nup"), ("All files", "*.*"))))).grid(row=1, column=2, padx=10, pady=10)
+        dst_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=8)
+        ttk.Button(dlg, text="Browse...", command=lambda: choose_file(
+            dst_var, "Choose .nup file to edit")).grid(row=1, column=2, padx=8, pady=8)
 
-        status_v = tk.StringVar(value="Select source and target .nup files, then click Copy metadata.")
-        ttk.Label(dlg, textvariable=status_v, wraplength=720).grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=(5, 10))
-        preview_text = tk.StringVar(value="Source metadata will appear here.")
-        ttk.Label(dlg, textvariable=preview_text, wraplength=540, justify="left").grid(
-            row=3, column=0, columnspan=2, sticky="w", padx=10, pady=10)
-        preview_icon = ttk.Label(dlg, text="No artwork", anchor="center", width=14)
-        preview_icon.grid(row=3, column=2, sticky="nsew", padx=10, pady=10)
-        copying = False
-        dlg.protocol("WM_DELETE_WINDOW", lambda: None if copying else dlg.destroy())
+        title_label = ttk.Label(dlg, text="Game title (optional)")
+        title_label.grid(row=3, column=0, sticky="w", padx=10, pady=7)
+        title_entry = self.bind_entry(ttk.Entry(dlg, textvariable=title_var, width=45))
+        title_entry.grid(row=3, column=1, sticky="ew", padx=8, pady=7)
+        version_label = ttk.Label(dlg, text="Display version (optional)")
+        version_label.grid(row=4, column=0, sticky="w", padx=10, pady=7)
+        version_entry = self.bind_entry(ttk.Entry(dlg, textvariable=version_var, width=45))
+        version_entry.grid(row=4, column=1, sticky="ew", padx=8, pady=7)
+        publisher_label = ttk.Label(dlg, text="Publisher (optional)")
+        publisher_label.grid(row=5, column=0, sticky="w", padx=10, pady=7)
+        publisher_entry = self.bind_entry(ttk.Entry(dlg, textvariable=publisher_var, width=45))
+        publisher_entry.grid(row=5, column=1, sticky="ew", padx=8, pady=7)
 
-        def preview_source(*_args) -> None:
-            try:
-                metadata = load_application(src_var.get().strip())
-                preview_text.set(f"Title: {metadata.title or '—'}\nPublisher: {metadata.publisher or '—'}\nVersion: {metadata.version or '—'}")
-                if metadata.icon:
-                    import io
-                    with Image.open(io.BytesIO(metadata.icon)) as image:
-                        image.thumbnail((80, 80), Image.Resampling.LANCZOS)
-                        dlg.preview_image = ImageTk.PhotoImage(image.convert("RGBA"), master=dlg)
-                    preview_icon.configure(image=dlg.preview_image, text="")
-                else:
-                    preview_icon.configure(image="", text="No artwork")
-            except Exception:
-                preview_text.set("Choose a valid source package to preview its metadata.")
+        icon_label = ttk.Label(dlg, text="Icon file (optional)")
+        icon_label.grid(row=6, column=0, sticky="w", padx=10, pady=7)
+        icon_entry = self.bind_entry(ttk.Entry(dlg, textvariable=icon_var, width=45))
+        icon_entry.grid(row=6, column=1, sticky="ew", padx=8, pady=7)
+
+        def browse_edit_icon() -> None:
+            selected = filedialog.askopenfilename(
+                parent=dlg, title="Choose an application icon",
+                filetypes=(("JPEG or PNG image", "*.jpg *.jpeg *.png *.dat"),
+                           ("All files", "*.*")))
+            if selected:
+                if not is_supported_image(selected):
+                    messagebox.showerror("Invalid Format", "Choose a valid JPEG or PNG image.", parent=dlg)
+                    return
+                icon_var.set(selected)
+
+        ttk.Button(dlg, text="Browse...", command=browse_edit_icon).grid(
+            row=6, column=2, sticky="ew", padx=8, pady=7)
+        preview_icon = ttk.Label(dlg, text="No artwork", anchor="center", relief="groove", width=14)
+        preview_icon.grid(row=3, column=2, rowspan=3, sticky="nsew", padx=8, pady=6)
+        preview_text = tk.StringVar(value="Metadata preview")
+        ttk.Label(dlg, textvariable=preview_text, wraplength=720).grid(
+            row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=(5, 8))
+        ttk.Label(dlg, textvariable=status_v, wraplength=720).grid(
+            row=7, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 5))
+
+        def show_dialog_metadata(metadata: ApplicationMetadata) -> None:
+            title_var.set(metadata.title)
+            version_var.set(metadata.version)
+            publisher_var.set(metadata.publisher)
+            icon_path = ""
+            if metadata.icon:
+                icon_path = str(Path(self.metadata_files.name) / f"edit-icon-{time.time_ns()}{image_extension(metadata.icon) or '.dat'}")
+                Path(icon_path).write_bytes(metadata.icon)
+            icon_var.set(icon_path)
+            preview_text.set(f"Title: {metadata.title or '—'}  |  Publisher: {metadata.publisher or '—'}  |  Version: {metadata.version or '—'}")
+            if metadata.icon:
+                import io
+                with Image.open(io.BytesIO(metadata.icon)) as image:
+                    image.thumbnail((88, 88), Image.Resampling.LANCZOS)
+                    dlg.preview_image = ImageTk.PhotoImage(image.convert("RGBA"), master=dlg)
+                preview_icon.configure(image=dlg.preview_image, text="")
+            else:
                 preview_icon.configure(image="", text="No artwork")
 
-        src_var.trace_add("write", preview_source)
-
-        def execute_copy() -> None:
-            s_path = src_var.get().strip()
-            d_path = dst_var.get().strip()
-            if not s_path or not os.path.isfile(s_path):
-                messagebox.showerror("Error", "Please select a valid source .nup file.", parent=dlg)
+        def refresh_fields(*_args) -> None:
+            selected = src_var.get().strip() or dst_var.get().strip()
+            if not selected or not os.path.isfile(selected):
                 return
-            if not d_path or not os.path.isfile(d_path):
+            try:
+                show_dialog_metadata(load_application(selected))
+            except Exception as exc:
+                status_v.set(f"Could not load metadata: {exc}")
+
+        src_var.trace_add("write", refresh_fields)
+        dst_var.trace_add("write", refresh_fields)
+
+        copying = False
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None if copying else dlg.destroy())
+        edit_fields = (src_entry, dst_entry, title_entry, version_entry,
+                       publisher_entry, icon_entry)
+        edit_button = ttk.Button(dlg, text="Edit metadata")
+        edit_button.grid(row=8, column=2, sticky="e", padx=10, pady=10)
+
+        def execute_edit() -> None:
+            nonlocal copying
+            source_path = src_var.get().strip()
+            target_path = dst_var.get().strip()
+            if not target_path or not os.path.isfile(target_path):
                 messagebox.showerror("Error", "Please select a valid target .nup file.", parent=dlg)
                 return
-            nonlocal copying
+            if source_path and (not os.path.isfile(source_path) or
+                                Path(source_path).resolve() == Path(target_path).resolve()):
+                messagebox.showerror("Error", "Choose a valid, different source .nup file.", parent=dlg)
+                return
+            if icon_var.get() and not is_supported_image(icon_var.get()):
+                messagebox.showerror("Invalid Format", "Choose a valid JPEG or PNG image.", parent=dlg)
+                return
             copying = True
             self.busy = True
             self._set_controls_enabled(False)
-            for widget in dlg.winfo_children():
-                if isinstance(widget, (ttk.Entry, ttk.Button)):
-                    widget.configure(state="disabled")
-            status_v.set("Copying metadata and verifying the target package…")
+            for widget in (*edit_fields, edit_button):
+                widget.configure(state="disabled")
+            status_v.set("Editing metadata and verifying the target package…")
             results = queue.Queue()
+            values = (title_var.get().strip(), version_var.get().strip(),
+                      publisher_var.get().strip(), icon_var.get().strip())
 
             def work() -> None:
                 try:
-                    results.put((copy_application(s_path, d_path), None))
+                    overrides = dict(name=values[0] or None,
+                                     display_version=values[1] or None,
+                                     publisher=values[2] or None,
+                                     icon=values[3] or None,
+                                     clear_name=not bool(values[0]),
+                                     clear_display_version=not bool(values[1]),
+                                     clear_publisher=not bool(values[2]),
+                                     clear_icon=not bool(values[3]))
+                    if source_path:
+                        metadata = copy_application(source_path, target_path, **overrides)
+                    else:
+                        from nup.edit import edit
+                        edit(target_path, **overrides)
+                        metadata = load_application(target_path)
+                    results.put((metadata, None))
                 except Exception as exc:
                     results.put((None, exc))
 
@@ -350,23 +434,21 @@ class NupPackagerApp:
                 copying = False
                 self.busy = False
                 self._set_controls_enabled(True)
-                for widget in dlg.winfo_children():
-                    if isinstance(widget, (ttk.Entry, ttk.Button)):
-                        widget.configure(state="normal")
+                for widget in (*edit_fields, edit_button):
+                    widget.configure(state="normal")
                 if error:
-                    status_v.set("Copy failed. Review the error before retrying.")
-                    messagebox.showerror("Copy Failed", str(error), parent=dlg)
+                    status_v.set("Edit failed. Review the error before retrying.")
+                    messagebox.showerror("Edit Failed", str(error), parent=dlg)
                 else:
                     self.show_metadata(metadata)
-                    self.status.set(f"Copied and verified application metadata in {Path(d_path).name}.")
-                    messagebox.showinfo("Success", f"Metadata copied and verified in:\n{d_path}", parent=dlg)
+                    self.status.set(f"Edited and verified metadata in {Path(target_path).name}.")
+                    messagebox.showinfo("Success", f"Metadata edited successfully in:\n{target_path}", parent=dlg)
                     dlg.destroy()
 
             threading.Thread(target=work, daemon=True).start()
             dlg.after(100, completed)
 
-        copy_btn = ttk.Button(dlg, text="Copy metadata", command=execute_copy)
-        copy_btn.grid(row=4, column=2, sticky="e", padx=10, pady=10)
+        edit_button.configure(command=execute_edit)
 
     def browse_icon(self) -> None:
         selected = filedialog.askopenfilename(
