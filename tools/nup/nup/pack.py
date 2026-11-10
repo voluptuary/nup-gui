@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover
 
 from . import format as F
 from . import meta as M
+from .roundtrip import read_sidecar
 from .icons import detect_icon, is_supported_image
 from .discover import ARTIFACT_NAMES, DirObj, FILE_TAG, PackInput, Tree, discover
 from .errors import OperationCancelled
@@ -224,7 +225,16 @@ def _write_meta_blocks(
                            publisher=publisher)
     app_pkg_idx = next((i for i, p in enumerate(packages) if p.kind == F.KIND_BASE), 0)
     for i, pkg in enumerate(packages):
-        block = M.meta_block(pkg, dump_label, app_extra if i == app_pkg_idx else b"")
+        if pkg.preserved_meta is not None:
+            block = pkg.preserved_meta
+            if i == app_pkg_idx and (names or icons or display_version is not None or publisher is not None):
+                records = M.parse_block(block)
+                overrides = M.parse_block(app_extra)
+                records.update({t: payload for t, payload in overrides.items()
+                                if t != F.TLV_SOURCE_DUMP})
+                block = M.update_block(block, records)
+        else:
+            block = M.meta_block(pkg, dump_label, app_extra if i == app_pkg_idx else b"")
         mo = blob_cursor  # == out.tell(); extents were appended sequentially
         out.write(block)
         blob_cursor += len(block)
@@ -319,17 +329,46 @@ def pack(
     _check_cancel(cancel)
     packages = discover(src, base_title_id, cancel)
     _check_cancel(cancel)
+    preserved = read_sidecar(src)
+    preserved_packages = {p["path"]: p for p in preserved.get("packages", [])}
     source_root = os.path.abspath(src)
     for pkg in packages:
         relative = os.path.relpath(os.path.abspath(pkg.src), source_root)
         if relative != ".":
             pkg.source_path = relative.replace(os.sep, "/")
+        previous = preserved_packages.get(relative.replace(os.sep, "/"))
+        if previous is not None:
+            if int(pkg.kind) != previous["kind"]:
+                raise F.NupError("Restored package kind does not match metadata sidecar")
+            pkg.title_id = previous["title_id"]
+            pkg.version = previous["version"]
+            pkg.flags = previous["flags"]
+            pkg.preserved_meta = previous["raw_block"]
+
+    matched_paths = {os.path.relpath(os.path.abspath(p.src), source_root).replace(os.sep, "/")
+                     for p in packages}
+    if preserved_packages.keys() - matched_paths:
+        raise F.NupError("Restored dump is missing a package from its metadata sidecar")
+
+    if not preserved:
+        from pathlib import Path
+        from .application import dump_application
+        defaults = dump_application(Path(src), [p.src for p in packages])
+        if not names and defaults.title:
+            names = {None: defaults.title}
+        if publisher is None and defaults.publisher:
+            publisher = defaults.publisher
+        if display_version is None and defaults.version:
+            display_version = defaults.version
 
     # A default-language icon is application metadata, stored in TLV 0x0003.
     # Honor an explicit path first; otherwise discover common artwork sidecars
     # and images in the package/control trees.
     icons = dict(icons or {})
-    if None not in icons:
+    preserved_has_icon = any(
+        any(t in M.parse_block(p["raw_block"]) for t in (F.TLV_ICON, F.TLV_LOCALIZED_ICONS))
+        for p in preserved.get("packages", []))
+    if None not in icons and not preserved_has_icon:
         detected = detect_icon(src, [pkg.src for pkg in packages])
         if detected is not None:
             icons[None] = detected
@@ -392,7 +431,19 @@ def _pack_container(
 
     artifacts = set() if keep_listings else ARTIFACT_NAMES
     _check_cancel(cancel)
+    if read_sidecar(src):
+        artifacts = set()  # Restored dumps retain every original file, including listings.
     tree = Tree(artifacts, cancel=cancel)
+    from pathlib import Path
+    root_path = Path(src).resolve()
+    for generated in read_sidecar(src).get("artwork", []):
+        path = (root_path / generated["path"]).resolve()
+        if not path.is_relative_to(root_path):
+            raise F.NupError("Unsafe generated artwork path in sidecar")
+        if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == generated["sha256"]:
+            tree.excluded_files.add(str(path))
+            if generated.get("created_directory"):
+                tree.prune_dirs.add(str(path.parent))
     roots = [tree.add_tree(pkg.src) for pkg in packages]
     tree.assign(roots)
 

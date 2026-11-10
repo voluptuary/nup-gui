@@ -28,6 +28,7 @@ def pack_atomic(
     icon: str | None = None,
     name: str | None = None,
     display_version: str | None = None,
+    publisher: str | None = None,
     progress: Callable[[int, int, FileObj], None] | None = None,
     cancel: Callable[[], bool] | None = None,
     keep_listings: bool = True,
@@ -56,7 +57,7 @@ def pack_atomic(
         pack(staged, source, keep_listings=keep_listings,
              icons={None: icon} if icon else None,
              names={None: name} if name else None,
-             display_version=display_version or None,
+             display_version=display_version or None, publisher=publisher or None,
              progress=progress, cancel=cancel)
         if cancel is not None and cancel():
             raise OperationCancelled("operation cancelled")

@@ -9,8 +9,8 @@ description = "Reference implementation of the NUP (NX Package) container format
 requires-python = ">=3.10"
 #readme = {file = "../../README.md", content-type = "text/markdown"}
 license = "MIT"
-license-files = ["../../LICENSE"]
-dependencies = ["zstandard>=0.22"]
+license-files = ["LICENSE"]
+dependencies = ["zstandard>=0.22", "Pillow>=10.4"]
 
 [tool.setuptools.dynamic]
 version = {attr = "nup.__init__.__version__"}

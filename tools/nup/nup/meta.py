@@ -27,7 +27,7 @@ def read_file(path: str) -> bytes:
         return fh.read()
 
 
-def parse_block(block: bytes) -> dict[int, bytes]:
+def parse_block(block: bytes, *, normalize: bool = True) -> dict[int, bytes]:
     """TLV type -> payload for one meta block (first occurrence wins)."""
     out: dict[int, bytes] = {}
     pos = 0
@@ -37,7 +37,45 @@ def parse_block(block: bytes) -> dict[int, bytes]:
             raise F.NupError("meta TLV overruns block")
         out.setdefault(t, bytes(block[pos + 8:pos + 8 + size]))
         pos += 8 + size
+    if not normalize:
+        return out
+    # Releases before the SPEC numbering fix wrote types 0..9 instead of 1..10.
+    # Only migrate when the bytes identify that layout; never guess from text
+    # fields alone. SOURCE_PACKAGE_PATH (0x000B) was already correct.
+    from .icons import image_extension
+    legacy = 0 in out or image_extension(out.get(2, b"")) is not None
+    if not legacy and 7 in out and 8 not in out and len(out[7]) != 32:
+        try:
+            legacy = bool(out[7]) and out[7].decode("utf-8").isprintable()
+        except UnicodeDecodeError:
+            pass
+    if legacy:
+        out = {(t + 1 if 0 <= t <= 9 else t): data for t, data in out.items()}
     return out
+
+
+def update_block(block: bytes, records: dict[int, bytes]) -> bytes:
+    """Change selected TLVs without discarding unknown/duplicate records."""
+    previous = parse_block(block)
+    legacy = previous != parse_block(block, normalize=False)
+    changes = {t for t in previous.keys() | records.keys()
+               if previous.get(t) != records.get(t)}
+    seen = set()
+    out = bytearray()
+    pos = 0
+    while pos + 8 <= len(block):
+        kind, reserved, size = F._tlv_s.unpack_from(block, pos)
+        payload = block[pos + 8:pos + 8 + size]
+        kind = kind + 1 if legacy and 0 <= kind <= 9 else kind
+        if kind not in changes:
+            out += F._tlv_s.pack(kind, reserved, size) + payload
+        elif kind in records and kind not in seen:
+            out += F._tlv_s.pack(kind, 0, len(records[kind])) + records[kind]
+        seen.add(kind)
+        pos += 8 + size
+    for kind in sorted(records.keys() - seen):
+        out += F._tlv_s.pack(kind, 0, len(records[kind])) + records[kind]
+    return bytes(out)
 
 
 def serialize_block(records: dict[int, bytes]) -> bytes:
@@ -56,8 +94,14 @@ def decode_localized(payload: bytes) -> dict[bytes, bytes]:
     while pos < len(payload):
         lang_len = payload[pos]
         pos += 1
+        if not lang_len or pos + lang_len + 4 > len(payload):
+            raise F.NupError("truncated or empty localized language tag")
         lang = payload[pos:pos + lang_len]
         pos += lang_len
+        try:
+            lang.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise F.NupError("localized language tag is not ASCII") from exc
         (data_len,) = struct.unpack_from("<I", payload, pos)
         pos += 4
         if pos + data_len > len(payload):

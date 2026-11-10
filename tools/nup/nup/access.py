@@ -70,16 +70,8 @@ def find_child(r: NupReader, dir_index: int, name: bytes) -> NodeRef | None:
 
 
 def meta_records(r: NupReader, pkg: PackageInfo) -> list[tuple[int, bytes]]:
-    out = []
-    pos = 0
-    block = r._mm[pkg.meta_offset:pkg.meta_offset + pkg.meta_size]
-    while pos + 8 <= len(block):
-        t, _r, size = F._tlv_s.unpack_from(block, pos)
-        if pos + 8 + size > len(block):
-            raise F.NupError("meta TLV overruns block")
-        out.append((t, bytes(block[pos + 8:pos + 8 + size])))
-        pos += 8 + size
-    return out
+    block = bytes(r._mm[pkg.meta_offset:pkg.meta_offset + pkg.meta_size])
+    return list(M.parse_block(block).items())
 
 
 def _localized(r: NupReader, pkg: PackageInfo, tlv_type: int) -> dict[bytes, bytes]:
@@ -308,17 +300,23 @@ def extract_dump(
 
     # NUP application artwork lives in meta TLV 0x0003. Materialize it as a
     # conventional control icon too, so dump-oriented tools retain the asset.
-    app_pkg = next((pkg for pkg, _ in extracted_packages
-                    if pkg.kind == F.KIND_BASE),
-                   extracted_packages[0][0] if extracted_packages else None)
-    icon_data = (app_meta(r, app_pkg).get(F.TLV_ICON) if app_pkg is not None else None)
+    from .application import read_application
+    icon_data = read_application(r).icon or None
     control_icon_written = False
+    generated_artwork = []
     if icon_data is not None:
         base_dest = next((path for pkg, path in extracted_packages
                           if pkg.kind == F.KIND_BASE),
                          extracted_packages[0][1] if extracted_packages else None)
         if base_dest is not None:
+            import hashlib
+            control_exists = os.path.isdir(os.path.join(base_dest, "control"))
             control_icon_written = write_control_icon(icon_data, base_dest)
+            if control_icon_written:
+                generated_artwork.append(dict(
+                    path=os.path.relpath(os.path.join(base_dest, "control", "icon" + image_extension(icon_data)), destination).replace(os.sep, "/"),
+                    sha256=hashlib.sha256(icon_data).hexdigest(),
+                    created_directory=not control_exists))
 
     if not control_icon_written:
         found_icon_file = any(has_control_icon(package_dest)
@@ -326,6 +324,8 @@ def extract_dump(
         if not found_icon_file and icon_data is None:
             print("unpack: warning: missing artwork metadata (no control icon found)",
                   file=sys.stderr)
+    from .roundtrip import write_sidecar
+    write_sidecar(r, destination, targets, generated_artwork)
     return done
 
 

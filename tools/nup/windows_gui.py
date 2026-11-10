@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 import queue
 import sys
 import threading
@@ -10,7 +12,11 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from PIL import Image, ImageTk
+
+from nup.application import ApplicationMetadata, copy_application, dump_application, load_application
 from nup.errors import OperationCancelled
+from nup.icons import image_extension, is_supported_image
 from nup.operations import pack_atomic, unpack_atomic
 
 
@@ -29,6 +35,7 @@ class NupPackagerApp:
         self.root = root
         self.events: queue.Queue[tuple[str, str, str, str]] = queue.Queue()
         self.busy = False
+        self.metadata_files = tempfile.TemporaryDirectory(prefix="nup-metadata-")
         self.cancel_event: threading.Event | None = None
         self.progress_mode = "indeterminate"
         self.mode = tk.StringVar(value="pack")
@@ -36,13 +43,15 @@ class NupPackagerApp:
         self.icon = tk.StringVar()
         self.title_name = tk.StringVar()
         self.display_version = tk.StringVar()
+        self.publisher = tk.StringVar()
         self.output = tk.StringVar()
         self.status = tk.StringVar(value="Choose a dump folder to package.")
 
         root.title("NUP Packager")
-        root.geometry("800x390")
-        root.minsize(700, 280)
+        root.geometry("800x440")
+        root.minsize(760, 360)
         root.columnconfigure(1, weight=1)
+        root.columnconfigure(2, minsize=120)
         root.protocol("WM_DELETE_WINDOW", self.close)
         try:
             root.iconbitmap(str(resource_path(ICON_RELATIVE_PATH)))
@@ -62,76 +71,154 @@ class NupPackagerApp:
 
         self.source_label = ttk.Label(root)
         self.source_label.grid(row=1, column=0, sticky="w", padx=8, pady=8)
-        self.source_entry = ttk.Entry(root, textvariable=self.source)
+        self.source_entry = self.bind_entry(ttk.Entry(root, textvariable=self.source, width=45))
         self.source_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=8)
         self.source_button = ttk.Button(root, text="Browse...", command=self.browse_source)
         self.source_button.grid(row=1, column=2, sticky="ew", padx=8, pady=8)
 
-        self.icon_label = ttk.Label(root, text="Icon file (optional)")
-        self.icon_label.grid(row=2, column=0, sticky="w", padx=8, pady=8)
-        self.icon_entry = ttk.Entry(root, textvariable=self.icon)
-        self.icon_entry.grid(row=2, column=1, sticky="ew", padx=8, pady=8)
-        self.icon_button = ttk.Button(root, text="Browse...", command=self.browse_icon)
-        self.icon_button.grid(row=2, column=2, sticky="ew", padx=8, pady=8)
+        # Row 2: Buttons on the same row
+        self.buttons_frame = ttk.Frame(root)
+        self.buttons_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=8, pady=4)
+        self.import_dump_button = ttk.Button(self.buttons_frame, text="Import from dump", command=self.import_from_dump)
+        self.import_dump_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+        self.import_nup_button = ttk.Button(self.buttons_frame, text="Import from .nup", command=self.import_from_nup)
+        self.import_nup_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+        self.copy_nup_button = ttk.Button(self.buttons_frame, text="Import from .nup to .nup", command=self.copy_metadata_nup_to_nup)
+        self.copy_nup_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
 
         self.title_label = ttk.Label(root, text="Game title (optional)")
         self.title_label.grid(row=3, column=0, sticky="w", padx=8, pady=8)
-        self.title_entry = ttk.Entry(root, textvariable=self.title_name)
-        self.title_entry.grid(row=3, column=1, columnspan=2, sticky="ew", padx=8, pady=8)
+        self.title_entry = self.bind_entry(ttk.Entry(root, textvariable=self.title_name, width=45))
+        self.title_entry.grid(row=3, column=1, sticky="ew", padx=8, pady=8)
 
         self.version_label = ttk.Label(root, text="Display version (optional)")
         self.version_label.grid(row=4, column=0, sticky="w", padx=8, pady=8)
-        self.version_entry = ttk.Entry(root, textvariable=self.display_version)
-        self.version_entry.grid(row=4, column=1, columnspan=2, sticky="ew", padx=8, pady=8)
+        self.version_entry = self.bind_entry(ttk.Entry(root, textvariable=self.display_version, width=45))
+        self.version_entry.grid(row=4, column=1, sticky="ew", padx=8, pady=8)
+
+        self.publisher_label = ttk.Label(root, text="Publisher (optional)")
+        self.publisher_label.grid(row=5, column=0, sticky="w", padx=8, pady=8)
+        self.publisher_entry = self.bind_entry(ttk.Entry(root, textvariable=self.publisher, width=45))
+        self.publisher_entry.grid(row=5, column=1, sticky="ew", padx=8, pady=8)
+
+        # Icon preview spanning rows 3 to 5 in column 2 (to the right of title, version, publisher entries)
+        self.icon_preview_label = ttk.Label(root, text="No artwork", anchor="center", relief="groove", width=16)
+        self.icon_preview_label.grid(row=3, column=2, rowspan=3, sticky="nsew", padx=8, pady=4)
+
+        self.icon_label = ttk.Label(root, text="Icon file (optional)")
+        self.icon_label.grid(row=6, column=0, sticky="w", padx=8, pady=8)
+        self.icon_entry = self.bind_entry(ttk.Entry(root, textvariable=self.icon, width=45))
+        self.icon_entry.grid(row=6, column=1, sticky="ew", padx=8, pady=8)
+        self.icon_button = ttk.Button(root, text="Browse...", command=self.browse_icon)
+        self.icon_button.grid(row=6, column=2, sticky="ew", padx=8, pady=8)
 
         self.output_label = ttk.Label(root)
-        self.output_label.grid(row=5, column=0, sticky="w", padx=8, pady=8)
-        self.output_entry = ttk.Entry(root, textvariable=self.output)
-        self.output_entry.grid(row=5, column=1, sticky="ew", padx=8, pady=8)
+        self.output_label.grid(row=7, column=0, sticky="w", padx=8, pady=8)
+        self.output_entry = self.bind_entry(ttk.Entry(root, textvariable=self.output, width=45))
+        self.output_entry.grid(row=7, column=1, sticky="ew", padx=8, pady=8)
         self.output_button = ttk.Button(root, text="Browse...", command=self.browse_output)
-        self.output_button.grid(row=5, column=2, sticky="ew", padx=8, pady=8)
+        self.output_button.grid(row=7, column=2, sticky="ew", padx=8, pady=8)
 
-        self.status_label = ttk.Label(root, textvariable=self.status)
+        self.status_label = ttk.Label(root, textvariable=self.status, wraplength=720)
+        root.bind("<Configure>", lambda event: self.status_label.configure(
+            wraplength=max(400, event.width - 32)) if event.widget is root else None)
         self.status_label.grid(
-            row=6, column=0, columnspan=3, sticky="w", padx=8, pady=(10, 4)
+            row=8, column=0, columnspan=3, sticky="w", padx=8, pady=(10, 4)
         )
         self.progress = ttk.Progressbar(root, mode="indeterminate", maximum=100)
-        self.progress.grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=5)
+        self.progress.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=5)
         self.progress.grid_remove()
 
         self.action_button = ttk.Button(root, command=self.start_operation)
-        self.action_button.grid(row=8, column=2, sticky="e", padx=8, pady=10)
+        self.action_button.grid(row=10, column=2, sticky="e", padx=8, pady=10)
         self.cancel_button = ttk.Button(root, text="Cancel", command=self.cancel_operation)
-        self.cancel_button.grid(row=8, column=1, sticky="e", padx=8, pady=10)
+        self.cancel_button.grid(row=10, column=1, sticky="e", padx=8, pady=10)
         self.cancel_button.grid_remove()
+
+        self.icon_image_ref = None
+        self.icon.trace_add("write", lambda *_: self.update_icon_preview())
         self.update_mode()
-        self.root.after(100, self.drain_events)
+        self.poll_after_id = self.root.after(100, self.drain_events)
+
+    def bind_entry(self, entry: ttk.Entry) -> ttk.Entry:
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Cut", command=lambda: entry.event_generate("<<Cut>>"))
+        menu.add_command(label="Copy", command=lambda: entry.event_generate("<<Copy>>"))
+        menu.add_command(label="Paste", command=lambda: entry.event_generate("<<Paste>>"))
+        menu.add_separator()
+        menu.add_command(label="Select All", command=lambda: entry.select_range(0, tk.END))
+
+        def show_menu(event: tk.Event) -> None:
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        entry.bind("<Button-3>", show_menu)
+        entry.bind("<Button-2>", show_menu)
+        return entry
+
+    def update_icon_preview(self) -> None:
+        icon_path = self.icon.get().strip()
+        if not icon_path or not os.path.isfile(icon_path):
+            self.icon_preview_label.configure(image="", text="No artwork")
+            self.icon_image_ref = None
+            return
+        try:
+            with Image.open(icon_path) as image:
+                image.thumbnail((96, 96), Image.Resampling.LANCZOS)
+                img = ImageTk.PhotoImage(image.convert("RGBA"), master=self.root)
+            self.icon_preview_label.configure(image=img, text="")
+            self.icon_image_ref = img
+        except (OSError, ValueError, tk.TclError):
+            self.icon_preview_label.configure(image="", text="Cannot preview image")
+            self.icon_image_ref = None
+
+    def show_metadata(self, metadata: ApplicationMetadata) -> None:
+        # Parse completely before changing any fields, so a failed import keeps
+        # the user's current edits. Temporary artwork lives until app close.
+        icon_path = ""
+        if metadata.icon:
+            path = Path(self.metadata_files.name) / ("icon-" + str(time.time_ns()) +
+                                                   (image_extension(metadata.icon) or ".dat"))
+            path.write_bytes(metadata.icon)
+            icon_path = str(path)
+        self.title_name.set(metadata.title)
+        self.publisher.set(metadata.publisher)
+        self.display_version.set(metadata.version)
+        self.icon.set(icon_path)
 
     def update_mode(self) -> None:
         if self.mode.get() == "pack":
-            for widget in (self.icon_label, self.icon_entry, self.icon_button,
+            for widget in (self.buttons_frame,
+                           self.icon_preview_label,
+                           self.icon_label, self.icon_entry, self.icon_button,
                            self.title_label, self.title_entry,
-                           self.version_label, self.version_entry):
+                           self.version_label, self.version_entry,
+                           self.publisher_label, self.publisher_entry):
                 widget.grid()
-            self.output_label.grid(row=5, column=0, sticky="w", padx=8, pady=8)
-            self.output_entry.grid(row=5, column=1, sticky="ew", padx=8, pady=8)
-            self.output_button.grid(row=5, column=2, sticky="ew", padx=8, pady=8)
-            self.status_label.grid(row=6, column=0, columnspan=3,
+            self.output_label.grid(row=7, column=0, sticky="w", padx=8, pady=8)
+            self.output_entry.grid(row=7, column=1, sticky="ew", padx=8, pady=8)
+            self.output_button.grid(row=7, column=2, sticky="ew", padx=8, pady=8)
+            self.status_label.grid(row=8, column=0, columnspan=3,
                                    sticky="w", padx=8, pady=(10, 4))
-            self.progress.grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=5)
+            self.progress.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=5)
             self.progress.grid_remove()
-            self.action_button.grid(row=8, column=2, sticky="e", padx=8, pady=10)
-            self.cancel_button.grid(row=8, column=1, sticky="e", padx=8, pady=10)
+            self.action_button.grid(row=10, column=2, sticky="e", padx=8, pady=10)
+            self.cancel_button.grid(row=10, column=1, sticky="e", padx=8, pady=10)
             self.cancel_button.grid_remove()
-            self.root.geometry("800x390")
+            self.root.geometry("800x420")
             self.source_label.configure(text="Dump parent folder")
             self.output_label.configure(text="Output .nup file")
             self.action_button.configure(text="Create NUP")
             self.status.set("Choose a dump folder to package.")
         else:
-            for widget in (self.icon_label, self.icon_entry, self.icon_button,
+            for widget in (self.buttons_frame,
+                           self.icon_preview_label,
+                           self.icon_label, self.icon_entry, self.icon_button,
                            self.title_label, self.title_entry,
-                           self.version_label, self.version_entry):
+                           self.version_label, self.version_entry,
+                           self.publisher_label, self.publisher_entry):
                 widget.grid_remove()
             self.output_label.grid(row=2, column=0, sticky="w", padx=8, pady=8)
             self.output_entry.grid(row=2, column=1, sticky="ew", padx=8, pady=8)
@@ -149,6 +236,138 @@ class NupPackagerApp:
             self.action_button.configure(text="Extract NUP")
             self.status.set("Choose a .nup file to restore as a dump folder.")
 
+    def import_from_nup(self) -> None:
+        selected = filedialog.askopenfilename(
+            parent=self.root,
+            title="Choose a NUP package to import metadata from",
+            filetypes=(("NUP package", "*.nup"), ("All files", "*.*")),
+        )
+        if not selected:
+            return
+        path = Path(selected)
+        try:
+            metadata = load_application(path)
+            self.show_metadata(metadata)
+            fields = [label for label, value in (("title", metadata.title),
+                      ("publisher", metadata.publisher), ("version", metadata.version),
+                      ("artwork", metadata.icon)) if value]
+            self.status.set(f"Imported {', '.join(fields)} from {path.name}. Review before creating a package."
+                            if fields else f"No application metadata found in {path.name}.")
+        except Exception as exc:
+            messagebox.showerror("Import Failed", f"Could not import metadata from {path.name}:\n{exc}", parent=self.root)
+
+    def import_from_dump(self) -> None:
+        selected_dir = filedialog.askdirectory(
+            parent=self.root,
+            title="Choose a dump folder to import metadata from",
+            mustexist=True,
+        )
+        if selected_dir:
+            self.auto_populate_metadata(Path(selected_dir))
+
+    def copy_metadata_nup_to_nup(self) -> None:
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Import from .nup to .nup")
+        dlg.geometry("780x360")
+        dlg.minsize(720, 340)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.columnconfigure(1, weight=1)
+
+        src_var = tk.StringVar()
+        dst_var = tk.StringVar()
+
+        ttk.Label(dlg, text="Source .nup file:").grid(row=0, column=0, sticky="w", padx=10, pady=10)
+        src_entry = self.bind_entry(ttk.Entry(dlg, textvariable=src_var, width=45))
+        src_entry.grid(row=0, column=1, sticky="ew", padx=10, pady=10)
+        ttk.Button(dlg, text="Browse...", command=lambda: src_var.set(filedialog.askopenfilename(parent=dlg, title="Choose Source .nup", filetypes=(("NUP package", "*.nup"), ("All files", "*.*"))))).grid(row=0, column=2, padx=10, pady=10)
+
+        ttk.Label(dlg, text="Target .nup file:").grid(row=1, column=0, sticky="w", padx=10, pady=10)
+        dst_entry = self.bind_entry(ttk.Entry(dlg, textvariable=dst_var, width=45))
+        dst_entry.grid(row=1, column=1, sticky="ew", padx=10, pady=10)
+        ttk.Button(dlg, text="Browse...", command=lambda: dst_var.set(filedialog.askopenfilename(parent=dlg, title="Choose Target .nup", filetypes=(("NUP package", "*.nup"), ("All files", "*.*"))))).grid(row=1, column=2, padx=10, pady=10)
+
+        status_v = tk.StringVar(value="Select source and target .nup files, then click Copy metadata.")
+        ttk.Label(dlg, textvariable=status_v, wraplength=720).grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=(5, 10))
+        preview_text = tk.StringVar(value="Source metadata will appear here.")
+        ttk.Label(dlg, textvariable=preview_text, wraplength=540, justify="left").grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=10, pady=10)
+        preview_icon = ttk.Label(dlg, text="No artwork", anchor="center", width=14)
+        preview_icon.grid(row=3, column=2, sticky="nsew", padx=10, pady=10)
+        copying = False
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None if copying else dlg.destroy())
+
+        def preview_source(*_args) -> None:
+            try:
+                metadata = load_application(src_var.get().strip())
+                preview_text.set(f"Title: {metadata.title or '—'}\nPublisher: {metadata.publisher or '—'}\nVersion: {metadata.version or '—'}")
+                if metadata.icon:
+                    import io
+                    with Image.open(io.BytesIO(metadata.icon)) as image:
+                        image.thumbnail((80, 80), Image.Resampling.LANCZOS)
+                        dlg.preview_image = ImageTk.PhotoImage(image.convert("RGBA"), master=dlg)
+                    preview_icon.configure(image=dlg.preview_image, text="")
+                else:
+                    preview_icon.configure(image="", text="No artwork")
+            except Exception:
+                preview_text.set("Choose a valid source package to preview its metadata.")
+                preview_icon.configure(image="", text="No artwork")
+
+        src_var.trace_add("write", preview_source)
+
+        def execute_copy() -> None:
+            s_path = src_var.get().strip()
+            d_path = dst_var.get().strip()
+            if not s_path or not os.path.isfile(s_path):
+                messagebox.showerror("Error", "Please select a valid source .nup file.", parent=dlg)
+                return
+            if not d_path or not os.path.isfile(d_path):
+                messagebox.showerror("Error", "Please select a valid target .nup file.", parent=dlg)
+                return
+            nonlocal copying
+            copying = True
+            self.busy = True
+            self._set_controls_enabled(False)
+            for widget in dlg.winfo_children():
+                if isinstance(widget, (ttk.Entry, ttk.Button)):
+                    widget.configure(state="disabled")
+            status_v.set("Copying metadata and verifying the target package…")
+            results = queue.Queue()
+
+            def work() -> None:
+                try:
+                    results.put((copy_application(s_path, d_path), None))
+                except Exception as exc:
+                    results.put((None, exc))
+
+            def completed() -> None:
+                nonlocal copying
+                try:
+                    metadata, error = results.get_nowait()
+                except queue.Empty:
+                    dlg.after(100, completed)
+                    return
+                copying = False
+                self.busy = False
+                self._set_controls_enabled(True)
+                for widget in dlg.winfo_children():
+                    if isinstance(widget, (ttk.Entry, ttk.Button)):
+                        widget.configure(state="normal")
+                if error:
+                    status_v.set("Copy failed. Review the error before retrying.")
+                    messagebox.showerror("Copy Failed", str(error), parent=dlg)
+                else:
+                    self.show_metadata(metadata)
+                    self.status.set(f"Copied and verified application metadata in {Path(d_path).name}.")
+                    messagebox.showinfo("Success", f"Metadata copied and verified in:\n{d_path}", parent=dlg)
+                    dlg.destroy()
+
+            threading.Thread(target=work, daemon=True).start()
+            dlg.after(100, completed)
+
+        copy_btn = ttk.Button(dlg, text="Copy metadata", command=execute_copy)
+        copy_btn.grid(row=4, column=2, sticky="e", padx=10, pady=10)
+
     def browse_icon(self) -> None:
         selected = filedialog.askopenfilename(
             parent=self.root,
@@ -157,7 +376,24 @@ class NupPackagerApp:
                        ("All files", "*.*")),
         )
         if selected:
+            if not is_supported_image(selected):
+                messagebox.showerror(
+                    "Invalid Format",
+                    "The selected file is not a supported JPEG or PNG image format (missing valid magic bytes).",
+                    parent=self.root,
+                )
+                return
             self.icon.set(selected)
+
+    def auto_populate_metadata(self, source_path: Path) -> None:
+        try:
+            from nup.discover import discover
+            packages = discover(str(source_path), None)
+            metadata = dump_application(source_path, [p.src for p in packages])
+            self.show_metadata(metadata)
+            self.status.set("Dump metadata loaded. Review or replace any item; empty fields are optional.")
+        except (Exception, SystemExit) as exc:
+            self.status.set(f"Metadata scan failed: {exc}")
 
     def browse_source(self) -> None:
         if self.mode.get() == "pack":
@@ -172,9 +408,10 @@ class NupPackagerApp:
             if not selected:
                 return
             self.source.set(selected)
+            source = Path(selected)
             if not self.output.get():
-                source = Path(selected)
                 self.output.set(str(source.parent / f"{source.name}.nup"))
+            self.auto_populate_metadata(source)
         else:
             selected = filedialog.askopenfilename(
                 parent=self.root,
@@ -256,7 +493,8 @@ class NupPackagerApp:
             args=(mode, source, output, self.cancel_event,
                   self.icon.get().strip() or None,
                   self.title_name.get().strip() or None,
-                  self.display_version.get().strip() or None), daemon=True,
+                  self.display_version.get().strip() or None,
+                  self.publisher.get().strip() or None), daemon=True,
         ).start()
 
     def cancel_operation(self) -> None:
@@ -275,6 +513,7 @@ class NupPackagerApp:
         icon: str | None,
         title_name: str | None,
         display_version: str | None,
+        publisher: str | None,
     ) -> None:
         last_report = 0.0
 
@@ -296,6 +535,7 @@ class NupPackagerApp:
                 pack_atomic(
                     str(output), str(source), keep_listings=True,
                     icon=icon, name=title_name, display_version=display_version,
+                    publisher=publisher,
                     progress=pack_progress, cancel=cancel_event.is_set,
                 )
             else:
@@ -311,6 +551,9 @@ class NupPackagerApp:
             self.events.put(("done", "", "", str(output)))
 
     def drain_events(self) -> None:
+        if self.poll_after_id is not None:
+            self.root.after_cancel(self.poll_after_id)
+            self.poll_after_id = None
         try:
             while True:
                 kind, first, second, detail = self.events.get_nowait()
@@ -339,7 +582,7 @@ class NupPackagerApp:
         except queue.Empty:
             pass
         try:
-            self.root.after(100, self.drain_events)
+            self.poll_after_id = self.root.after(100, self.drain_events)
         except tk.TclError:
             pass
 
@@ -357,7 +600,9 @@ class NupPackagerApp:
         state = "normal" if enabled else "disabled"
         for control in (
             self.pack_radio, self.unpack_radio, self.source_entry, self.source_button,
+            self.import_nup_button, self.import_dump_button, self.copy_nup_button,
             self.icon_entry, self.icon_button, self.title_entry, self.version_entry,
+            self.publisher_entry,
             self.output_entry, self.output_button, self.action_button,
         ):
             control.configure(state=state)
@@ -370,6 +615,10 @@ class NupPackagerApp:
                 parent=self.root,
             )
             return
+        if self.poll_after_id is not None:
+            self.root.after_cancel(self.poll_after_id)
+            self.poll_after_id = None
+        self.metadata_files.cleanup()
         self.root.destroy()
 
 
