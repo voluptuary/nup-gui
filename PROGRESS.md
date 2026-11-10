@@ -97,3 +97,10 @@ This document records meaningful changes and enhancements made to `nup-gui` and 
   editable title, version, publisher, and icon fields beneath them. The bottom
   action now reads “Edit metadata” and applies those values to the selected target
   in one atomic edit.
+
+## Windows GUI build refresh (2026-11-10)
+
+- Rebuilt `dist/nup-gui.exe` and `dist/nup-gui-windows-x64.zip` from the merged
+  `gui` source after the metadata editor layout update.
+- Confirmed the executable is a Windows x64 GUI binary and the ZIP passes
+  integrity checking with only `nup-gui.exe` inside.
