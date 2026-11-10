@@ -60,36 +60,6 @@ This document records meaningful changes and enhancements made to `nup-gui` and 
   that local path in license-files, avoiding setuptools' outside-project glob
   deprecation and its scheduled future build failure.
 
-## Summary of Changes
-
-1. **Automatic Metadata Discovery & Incorporation**
-   - **Technical Explanation**: Enhanced `nup-gui` (`windows_gui.py`) and underlying discovery/packing utilities to automatically scan selected dump folders and `.nup` packages. When a dump folder is selected, it auto-detects application icons via `detect_icon`, infers game titles, and picks up version numbers.
-
-2. **UI Layout Enhancements & Uniform Entry Sizing**
-   - **Technical Explanation**: Standardized all `ttk.Entry` fields (`source_entry`, `icon_entry`, `title_entry`, `version_entry`, `publisher_entry`, `output_entry`) to have a uniform width (`width=45`) and height. Relocated the icon row below the title, version, and publisher fields.
-
-3. **Space-Saving Live Icon Thumbnail Preview**
-   - **Technical Explanation**: Added a live icon thumbnail preview widget that spans rows 3 to 5 in column 2 (to the right of Game Title, Display Version, and Publisher entry fields), fitting into the interface without increasing row spacing. Traces variable writes on `self.icon` to update dynamically.
-
-4. **Split Metadata Import Buttons & Exact Wording**
-   - **Technical Explanation**: Configured three action buttons side-by-side on the same row with exact wording:
-     - `"Import from dump"`
-     - `"Import from .nup"`
-     - `"Import from .nup to .nup"`
-   - Implemented field-clearing behavior so fields are reset before importing fresh metadata.
-
-5. **NUP-to-NUP Metadata Copy Dialog Window**
-   - **Technical Explanation**: Implemented a dedicated modal window (`tk.Toplevel`) for `"Import from .nup to .nup"` featuring source and target `.nup` file pickers, status updates, and a final `"Copy metadata"` action button leveraging `nup.edit.edit`.
-
-6. **Robust Binary/Text Metadata Validation (`_safe_text`)**
-   - **Technical Explanation**: Added strict validation checking during metadata import from NUP packages and dumps to ensure binary image payloads (like JPEG/PNG magic bytes or JFIF headers) are never incorrectly decoded into text fields (title, publisher, display version).
-
-7. **Copy/Paste Context Menus**
-   - **Technical Explanation**: Bound right-click context menus (`Cut`, `Copy`, `Paste`, `Select All`) to all editable text entry fields.
-
-8. **Non-Interactive Wine Build Pipeline (`build_wine.sh`)**
-   - **Technical Explanation**: Configured `build_wine.sh` to run headlessly under `xvfb-run` with `WINEDLLOVERRIDES="mscoree,mshtml="` to suppress Wine GUI/debugger popups. Applied Python 3.12 `shutil.py` `CopyFile2` bypass for Wine 9 compatibility, enabling reliable, fully non-interactive compilation of `dist/nup-gui.exe` and `dist/nup-gui-windows-x64.zip`.
-
 ## Final validation and publication (2026-11-10)
 
 - Final restored devcontainer image built successfully. Its post-create script
@@ -104,15 +74,16 @@ This document records meaningful changes and enhancements made to `nup-gui` and 
   Windows x64; the final smoke test opened it, checked Windows message handling,
   and closed it cleanly. ZIP integrity passed and its sole entry is nup-gui.exe.
   These generated artifacts remain ignored by Git and available in the workspace.
-- Command-line pushes were rejected with HTTP 403 by the Codespace token.
-  The connected GitHub account has write access to voluptuary/nup-gui, so the
-  tested files were published through that connection on
-  fix/codespace-metadata-roundtrip. The code commit is
-  9f3c2285b7e51772898111a9de1d541f6feb0bfd. Its tree hash
-  7d950612ead5c2f2159d38cc64099fc88ba18918 exactly matches the tested local
-  code commit f7a55731257aff59c4c8ec750188c92b8a2dae4b. Subsequent documentation
-  updates are published on the same branch. Existing default branches and the
-  Codespaces auto-fork hook were left unchanged.
 - A live Codespace rebuild was not triggered during the connected session.
   Use Codespaces: Rebuild Container to activate the restored configuration.
   Keep .nup-metadata.json with extracted dumps to retain container-only metadata.
+
+## Pull request cleanup (2026-11-10)
+
+- Reviewed PR #1 against the tested repair branch. Its older GUI implementation
+  is superseded by the metadata, round-trip, and Codespace fixes above.
+- Removed obsolete descriptions of the broken implementation and transient
+  publishing details. Retained the recovery instructions, preservation contract,
+  regression tests, and build fixes needed to reproduce the validated result.
+- Application and build code are unchanged from the version validated with
+  19 tests on Linux/Xvfb and Windows Python/Wine and the executable smoke test.

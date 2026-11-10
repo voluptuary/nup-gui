@@ -158,24 +158,3 @@ warning rather than losing their package tree.
   The Windows executable can be smoke-tested under Wine with
   `tools/nup/smoke_gui.py` using the installed Windows Python. Build artifacts
   remain ignored by Git and must be downloaded separately from the workspace.
-
-## Publishing from a restricted Codespace
-
-The command-line Codespaces token and the connected GitHub account can have
-separate permissions. On 2026-11-10, command-line pushes returned HTTP 403 for
-both origin (merkin-agent/nup-gui) and upstream (voluptuary/nup-gui), while the
-connected GitHub account could publish to voluptuary/nup-gui. Check permissions
-before retrying; do not print credentials or force-push to work around this.
-
-The repository can contain a Codespaces-managed post-commit hook that attempts
-to create a fork and rewrite remotes. Preserve that hook. When publication to
-an existing destination is already authorized and no project commit hooks are
-installed, bypass only that commit invocation's hook path to avoid triggering
-a stale automatic fork. Normal Git hooks remain unchanged.
-
-When Git transport is restricted but the connected GitHub tools permit writing,
-Git blob/tree/commit/ref tools can publish the authorized files. Verify each
-uploaded blob against its local Git blob SHA and compare the resulting complete
-tree SHA against the tested local tree before moving a branch ref. Use a new
-branch when histories diverge; do not overwrite a default branch. The completed
-repair is on voluptuary/nup-gui branch fix/codespace-metadata-roundtrip.
