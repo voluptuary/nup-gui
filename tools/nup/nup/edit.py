@@ -1,12 +1,10 @@
-"""NUP metadata editor: rewrite a container's meta blocks in place.
+"""Atomically edit NUP metadata without moving or dropping file extents.
 
-Meta blocks are the trailing region of a .nup, so an edit rebuilds only
-that tail: everything before it (superblock, TOC, and all blob extents)
-is preserved byte-for-byte, per-package meta_offset/meta_size are patched
-in the TOC, the TOC is re-hashed and the superblock rewritten. The UUID
-is unaffected (SPEC §2.1 covers only title_id/version/kind). Edits merge
-into the existing metadata: unspecified TLVs are preserved, and package
-level TLVs (NPDM, build ID, source dump) are always kept.
+Metadata may precede or follow file data. Reuse only a proven metadata-only
+suffix; preserve the remaining bytes at their original offsets and append the
+updated blocks. Patch the TOC and superblock in place in the temporary copy,
+including when the source has an extended header. Unspecified metadata and
+package identity are preserved.
 """
 
 from __future__ import annotations
@@ -100,12 +98,24 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
             serialized[idx] = M.update_block(original_blocks[idx], records[idx])
             new_tail = b"".join(serialized)
 
-            # end of the blob region = first meta block (only extents before it)
-            meta_starts = [p.meta_offset for p in r.packages if p.meta_size]
-            blob_end = min(meta_starts) if meta_starts else r.super["file_size"]
+            # Metadata offsets do not delimit the file-data region. Only
+            # reclaim a contiguous metadata suffix beyond every live extent.
+            # Metadata before/interleaved with data remains as unreferenced
+            # bytes; subsequent edits reuse the new suffix without accumulating
+            # another copy of it. Unknown trailing bytes are preserved too.
+            s = r.super
+            protected_end = max(s["blob_offset"], s["toc_offset"] + s["toc_size"],
+                                max((offset + stored for _, size, _, offset, stored, _ in r.files
+                                     if size), default=0))
+            copy_end = s["file_size"]
+            ranges = {(p.meta_offset, p.meta_offset + p.meta_size)
+                      for p in r.packages if p.meta_size}
+            for start, end in sorted(ranges, reverse=True):
+                if end == copy_end and start >= protected_end:
+                    copy_end = start
 
             new_offsets: list[tuple[int, int]] = []
-            cursor = blob_end
+            cursor = copy_end
             for block in serialized:
                 if block:
                     new_offsets.append((cursor, len(block)))
@@ -130,14 +140,16 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
                                       len(r.packages), s["flags"], s["uuid"])
 
             with open(tmp, "wb") as out:
-                out.write(superblock)
-                out.write(toc)
-                copy_pos = s["toc_offset"] + s["toc_size"]
-                while copy_pos < blob_end:
-                    chunk = r._mm[copy_pos:min(copy_pos + _COPY_CHUNK, blob_end)]
+                copy_pos = 0
+                while copy_pos < copy_end:
+                    chunk = r._mm[copy_pos:min(copy_pos + _COPY_CHUNK, copy_end)]
                     out.write(chunk)
                     copy_pos += len(chunk)
                 out.write(new_tail)
+                out.seek(0)
+                out.write(superblock)
+                out.seek(s["toc_offset"])
+                out.write(toc)
         finally:
             # Release the original (file handle and mmap) before replacing it:
             # on Windows a rename over a still-open file fails with

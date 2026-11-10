@@ -14,7 +14,7 @@ from windows_gui import NupPackagerApp, configure_error_log, PREVIEW_SIZE
 from nup.application import load_application
 from nup.meta import serialize_block
 from nup.pack import pack
-from test_metadata import image_bytes, replace_metadata
+from test_metadata import image_bytes, replace_metadata, relayout_package
 
 
 @unittest.skipUnless(os.environ.get("DISPLAY"), "GUI tests require Xvfb or a display")
@@ -231,6 +231,38 @@ class GuiMetadataTests(unittest.TestCase):
         self.root.update()
         self.assertEqual((self.app.editor_preview_box.winfo_width(), self.app.editor_preview_box.winfo_height()), pack_dimensions)
         self.app.stop_progress(self.app.editor_progress)
+        self.assertFalse(self.app.error_log_path.exists())
+
+    def test_mode_switching_preserves_default_and_resized_window_dimensions(self):
+        for dimensions in ((900, 510), (1000, 600)):
+            self.root.geometry(f"{dimensions[0]}x{dimensions[1]}")
+            for mode in ("pack", "unpack", "metadata", "pack", "metadata", "unpack"):
+                self.app.mode.set(mode)
+                self.app.update_mode()
+                self.root.update()
+                self.assertEqual((self.root.winfo_width(), self.root.winfo_height()), dimensions)
+
+    def test_gui_transfer_can_fill_empty_publisher_with_metadata_before_file_data(self):
+        source = self.work / "source.nup"
+        target = self.work / "target.nup"
+        pack(str(source), str(self.source))
+        pack(str(target), str(self.source))
+        replace_metadata(source, [serialize_block({5: b"Source title"})])
+        relayout_package(target, metadata_first=True)
+        self.app.copy_nup_button.invoke()
+        self.app.editor_source.set(str(source))
+        self.app.editor_target.set(str(target))
+        self.assertEqual(self.app.editor_publisher.get(), "")
+        self.app.editor_publisher.set("New publisher")
+        with patch("windows_gui.messagebox.askyesno", return_value=True), patch("windows_gui.messagebox.showinfo"), patch("windows_gui.messagebox.showerror") as error:
+            self.app.editor_transfer_button.invoke()
+            deadline = time.monotonic() + 10
+            while self.app.busy and time.monotonic() < deadline:
+                self.root.update()
+                time.sleep(0.01)
+            self.assertFalse(self.app.busy)
+            error.assert_not_called()
+        self.assertEqual(load_application(target).publisher, "New publisher")
         self.assertFalse(self.app.error_log_path.exists())
 
 

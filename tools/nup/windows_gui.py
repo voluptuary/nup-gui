@@ -90,8 +90,8 @@ class NupPackagerApp:
         self.status = tk.StringVar(value="Choose a dump folder to package.")
 
         root.title("NUP Packager")
-        root.geometry("800x440")
-        root.minsize(760, 360)
+        root.geometry("900x510")
+        root.minsize(900, 510)
         root.columnconfigure(1, weight=1)
         root.columnconfigure(2, minsize=120)
         root.protocol("WM_DELETE_WINDOW", self.close)
@@ -282,7 +282,6 @@ class NupPackagerApp:
             for widget in self.main_widgets:
                 widget.grid_remove()
             self.copy_metadata_nup_to_nup()
-            self.root.geometry("900x510")
             return
         if self.editor_frame is not None:
             self.editor_frame.grid_remove()
@@ -306,7 +305,6 @@ class NupPackagerApp:
             self.action_button.grid(row=10, column=2, sticky="e", padx=8, pady=10)
             self.cancel_button.grid(row=10, column=1, sticky="e", padx=8, pady=10)
             self.cancel_button.grid_remove()
-            self.root.geometry("800x420")
             self.source_label.configure(text="Dump parent folder")
             self.output_label.configure(text="Output .nup file")
             self.action_button.configure(text="Create NUP")
@@ -329,7 +327,6 @@ class NupPackagerApp:
             self.action_button.grid(row=5, column=2, sticky="e", padx=8, pady=10)
             self.cancel_button.grid(row=5, column=1, sticky="e", padx=8, pady=10)
             self.cancel_button.grid_remove()
-            self.root.geometry("800x280")
             self.source_label.configure(text="Input .nup file")
             self.output_label.configure(text="Output dump folder")
             self.action_button.configure(text="Extract NUP")

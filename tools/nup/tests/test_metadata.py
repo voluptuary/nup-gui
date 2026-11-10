@@ -45,6 +45,44 @@ def replace_metadata(path, blocks):
     path.write_bytes(data)
 
 
+def relayout_package(path, *, metadata_first=False, header_padding=0, trailer=b""):
+    """Build valid alternate layouts independently of the metadata editor."""
+    with NupReader(str(path)) as reader:
+        raw = bytes(reader._mm)
+        info = dict(reader.super)
+        blocks = [raw[p.meta_offset:p.meta_offset + p.meta_size] for p in reader.packages]
+        toc = bytearray(raw[info["toc_offset"]:info["toc_offset"] + info["toc_size"]])
+        blob = raw[info["blob_offset"]:min(p.meta_offset for p in reader.packages if p.meta_size)]
+        toc_offset = info["toc_offset"] + header_padding
+        blob_offset = info["blob_offset"] + header_padding
+        data = bytearray(blob_offset)
+        data[F.HEADER_SIZE:toc_offset] = b"H" * (toc_offset - F.HEADER_SIZE)
+        offsets = []
+        if metadata_first:
+            for block in blocks:
+                offsets.append((len(data), len(block)))
+                data.extend(block)
+            data.extend(b"\0" * (-len(data) % F.EXTENT_ALIGN))
+        shift = len(data) - info["blob_offset"]
+        data.extend(blob)
+        if not metadata_first:
+            for block in blocks:
+                offsets.append((len(data), len(block)))
+                data.extend(block)
+        data.extend(trailer)
+        for index, (offset, size) in enumerate(offsets):
+            struct.pack_into("<QI", toc, F._toc_head_s.size + index * F.PKG_SIZE + 32, offset, size)
+        start = F._toc_head_s.size + len(reader.packages) * F.PKG_SIZE + reader.dir_count * F.DIR_SIZE
+        for index, record in enumerate(reader.files):
+            if record[1]:
+                struct.pack_into("<Q", toc, start + index * F.FILE_SIZE + 16, record[3] + shift)
+        data[toc_offset:toc_offset + len(toc)] = toc
+        data[:F.HEADER_SIZE] = F.pack_super(F.MAGIC, info["header_size"] + header_padding,
+            info["header_version"], toc_offset, len(toc), hashlib.sha256(toc).digest(),
+            blob_offset, len(data), len(blocks), info["flags"], info["uuid"])
+    path.write_bytes(data)
+
+
 def snapshot(path):
     with NupReader(str(path)) as r:
         return ([(p.title_id, int(p.kind), p.version, p.flags) for p in r.packages],
@@ -203,3 +241,68 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(dump_application(dump, []).title, value)
         edit(str(target), name=value + " updated", publisher=value)
         self.assertEqual(load_application(target).title, value + " updated")
+
+    def test_empty_publisher_edit_preserves_extents_in_alternate_layouts(self):
+        exefs = self.source / "base/exefs"
+        exefs.mkdir()
+        (exefs / "main").write_bytes(bytes(range(256)) * 32)
+        for first, padding in ((True, 0), (False, 64), (True, 64)):
+            with self.subTest(metadata_first=first, header_padding=padding):
+                path = self.package(f"edit-{first}-{padding}.nup")
+                relayout_package(path, metadata_first=first, header_padding=padding)
+                self.assertEqual(load_application(path).publisher, "")
+                expected = (False, ["toc_offset 0xc0 != 0x80 (v1)"]) if padding else (True, [])
+                self.assertEqual(verify(str(path), deep=True), expected)
+                before = snapshot(path)
+                with NupReader(str(path)) as reader:
+                    extents = list(reader.files)
+                    header = bytes(reader._mm[F.HEADER_SIZE:reader.super["toc_offset"]])
+                edit(str(path), publisher="Studio: & $ 日本語")
+                self.assertEqual(load_application(path).publisher, "Studio: & $ 日本語")
+                self.assertEqual(snapshot(path)[:4], before[:4])
+                expected = (False, ["toc_offset 0xc0 != 0x80 (v1)"]) if padding else (True, [])
+                self.assertEqual(verify(str(path), deep=True), expected)
+                with NupReader(str(path)) as reader:
+                    self.assertEqual(reader.files, extents)
+                    self.assertEqual(bytes(reader._mm[F.HEADER_SIZE:reader.super["toc_offset"]]), header)
+                edit(str(path), publisher="Publisher A")
+                size = path.stat().st_size
+                edit(str(path), publisher="Publisher B")
+                self.assertEqual(path.stat().st_size, size)
+
+    def test_transfer_and_fill_empty_publisher_preserve_alternate_target_layout(self):
+        source = self.package("copy-source.nup")
+        replace_metadata(source, [serialize_block({5: b"Copied: & $", 3: image_bytes()})])
+        original_source = source.read_bytes()
+        for first, padding in ((True, 0), (False, 64), (True, 64)):
+            with self.subTest(metadata_first=first, header_padding=padding):
+                target = self.package(f"copy-target-{first}-{padding}.nup")
+                replace_metadata(target, [serialize_block({1: b"target npdm", 0xF001: b"keep me"})])
+                relayout_package(target, metadata_first=first, header_padding=padding, trailer=b"preserved trailer")
+                before = snapshot(target)
+                result = copy_application(str(source), str(target), publisher="New studio: & $")
+                self.assertEqual((result.title, result.publisher), ("Copied: & $", "New studio: & $"))
+                self.assertEqual(snapshot(target)[:4], before[:4])
+                self.assertEqual(source.read_bytes(), original_source)
+                expected = (False, ["toc_offset 0xc0 != 0x80 (v1)"]) if padding else (True, [])
+                self.assertEqual(verify(str(target), deep=True), expected)
+                with NupReader(str(target)) as reader:
+                    records = dict(meta_records(reader, reader.packages[0]))
+                    self.assertIn(b"preserved trailer", bytes(reader._mm))
+                self.assertEqual(records[1], b"target npdm")
+                self.assertEqual(records[0xF001], b"keep me")
+
+    def test_edit_validation_failure_keeps_original_and_removes_temporary_copy(self):
+        from unittest.mock import patch
+        path = self.package("validation-failure.nup")
+        relayout_package(path, metadata_first=True)
+        original = path.read_bytes()
+        def fail_temporary(candidate):
+            if candidate == str(path) + ".tmp":
+                raise F.NupError("simulated validation failure")
+            return NupReader(candidate)
+        with patch("nup.edit.NupReader", side_effect=fail_temporary):
+            with self.assertRaisesRegex(F.NupError, "simulated validation failure"):
+                edit(str(path), publisher="New publisher")
+        self.assertEqual(path.read_bytes(), original)
+        self.assertFalse(Path(str(path) + ".tmp").exists())

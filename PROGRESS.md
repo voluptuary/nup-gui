@@ -2,6 +2,31 @@
 
 This document records meaningful changes and enhancements made to `nup-gui` and its tooling.
 
+## 0.3.1 metadata rewrite repair (2026-11-10)
+
+- Investigated files/error.log. Its temporary-result validation failure was
+  reproduced exactly as "extent out of bounds for file b'main'" using a valid
+  container with metadata before its file extents. The previous writer assumed
+  that the first metadata offset marked the end of all game data; larger
+  replacement metadata could also overwrite extents without a bounds failure.
+- Replaced that assumption with preservation of every live extent at its
+  original offset. Reuse only a contiguous metadata-only suffix beyond all
+  extents and the TOC, preserve extended header/unknown trailing bytes, and
+  patch the temporary copy at actual header/TOC offsets before validation and
+  atomic replacement. Repeated edits reuse the suffix instead of adding
+  another copy. Input files remain unchanged on validation failure.
+- Added regressions for empty-publisher edits, metadata transfers with a
+  publisher override, alternate metadata/header layouts, compressed file bytes,
+  extent offsets, unrelated metadata, source preservation, and failed validation.
+- All modes now share a 900×510 default/minimum; switching radio modes retains
+  the current size, including user resizing.
+- Validation: 32 tests passed on Linux/Xvfb and Windows Python 3.12.10/Wine64.
+  The rebuilt executable passed the message-loop smoke test; its embedded
+  bytecode was checked for the corrected metadata writer. ZIP integrity and
+  single-executable contents passed. Retained internal compression and no UPX.
+- Rewrote the 0.3.1 test release notes to use "special characters" without
+  literal examples that trigger Markdown rendering, and refreshed release files.
+
 ## 0.3.1 test build refresh (2026-11-10)
 
 - Error logging now opens lazily on the first error. Successful startup and

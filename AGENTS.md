@@ -139,6 +139,13 @@ warning rather than losing their package tree.
 
 ## Metadata preservation and GUI validation
 
+- Metadata blocks are not guaranteed to follow file extents. Edits must preserve
+  every live extent at its original offset, extended header bytes, and unknown
+  trailing bytes. Reclaim only a contiguous metadata-only suffix beyond all
+  file extents and the TOC; otherwise append updated metadata. Patch the header
+  and TOC at their actual offsets in the temporary copy, validate, then replace
+  the original. Do not use the first metadata offset as the end of file data.
+
 - TLV IDs are the literal SPEC.md values, NPDM `0x0001` through localized
   icons `0x000A`, with source-package path `0x000B`. Never use zero-based IDs.
   Readers recognize the earlier shifted layout when NPDM/icon/provenance bytes
@@ -173,6 +180,9 @@ warning rather than losing their package tree.
 
 ## GUI metadata editor and diagnostics
 
+- Use a common 900×510 default/minimum window size for all radio modes.
+  Switching modes must preserve the current window dimensions, including a
+  user-resized window.
 - Metadata editing is the third radio mode in the main window; keep it inline
   and retain source/target fields and edits when switching modes. Transfer is
   the rightmost action; all editor buttons use the same width. Both source
@@ -195,3 +205,5 @@ warning rather than losing their package tree.
   unchanged. Preserve existing log entries; logs are ignored.
 - Special characters such as `:`, `&`, and `$` are metadata text, passed directly
   to Python APIs. Windows filename restrictions still apply to selected paths.
+  In release notes, use the phrase "special characters" instead of literal
+  character examples, to avoid Markdown rendering problems.
