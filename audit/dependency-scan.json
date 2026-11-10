@@ -1,0 +1,57 @@
+{
+  "scanner": "pip-audit",
+  "date": "2026-11-10",
+  "scope": "Resolved Windows build/runtime Python packages; excludes the embedded interpreter, OS and vendored native-library CVEs.",
+  "dependencies": [
+    {
+      "name": "altgraph",
+      "version": "0.17.5",
+      "vulnerability_ids": []
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "vulnerability_ids": []
+    },
+    {
+      "name": "pefile",
+      "version": "2024.8.26",
+      "vulnerability_ids": []
+    },
+    {
+      "name": "pillow",
+      "version": "13.0.0",
+      "vulnerability_ids": []
+    },
+    {
+      "name": "pip",
+      "version": "26.3",
+      "vulnerability_ids": []
+    },
+    {
+      "name": "pyinstaller",
+      "version": "6.22.3",
+      "vulnerability_ids": []
+    },
+    {
+      "name": "pyinstaller-hooks-contrib",
+      "version": "2026.10",
+      "vulnerability_ids": []
+    },
+    {
+      "name": "pywin32-ctypes",
+      "version": "0.2.3",
+      "vulnerability_ids": []
+    },
+    {
+      "name": "setuptools",
+      "version": "84.2.1",
+      "vulnerability_ids": []
+    },
+    {
+      "name": "zstandard",
+      "version": "0.25.0",
+      "vulnerability_ids": []
+    }
+  ]
+}

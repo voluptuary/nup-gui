@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from . import format as F
 from .access import app_meta, build_id, extract_tree, find_package, has_control_icon, \
-    iter_children, localized_titles, resolve_path, write_control_icon
+    iter_children, localized_titles, resolve_path, write_control_icon, extract_flat
 from . import edit as edit_cmd
 from .pack import pack
 from .read import NupReader
@@ -19,6 +19,11 @@ from .verify import verify
 if TYPE_CHECKING:
     from .discover import FileObj
     from .read import NodeRef
+
+
+def _terminal_text(value: str) -> str:
+    """Keep metadata/names readable without emitting terminal control sequences."""
+    return "".join(char if char.isprintable() else repr(char)[1:-1] for char in value)
 
 
 def _parse_kv_flags(default: str | None, lang_flags: list[str], what: str
@@ -67,7 +72,7 @@ def _cmd_pack(args: argparse.Namespace) -> int:
 def _print_tree(r: NupReader, dir_index: int, prefix: str, max_depth: int, depth: int = 0,
                 show_files: bool = True) -> None:
     for child in iter_children(r, dir_index):
-        label = child.name.decode("utf-8", "surrogateescape")
+        label = _terminal_text(child.name.decode("utf-8", "surrogateescape"))
         if child.is_dir:
             print(f"{prefix}{label}/")
             if depth + 1 < max_depth:
@@ -107,7 +112,7 @@ def _cmd_info(args: argparse.Namespace) -> int:
             # values as revisions instead of pretending the decode is a version.
             disp = meta.get(F.TLV_DISPLAY_VERSION, b"").decode("utf-8", "replace")
             if disp:
-                ver = f"display {disp} (NCM v{p.version:#x})"
+                ver = f"display {_terminal_text(disp)} (NCM v{p.version:#x})"
             elif p.version == 0:
                 ver = "no version stored"
             elif p.version & 0xFFFF == 0:
@@ -139,7 +144,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
     with NupReader(args.file) as r:
         for fi, (name, size, sha, eoff, esz, codec) in enumerate(r.files):
             tag = "zstd" if codec == F.CODEC_ZSTD else ("raw" if size else "empty")
-            print(f"{fi:>8}  {size:>12}  {tag:<4}  {name.decode('utf-8', 'surrogateescape')}")
+            print(f"{fi:>8}  {size:>12}  {tag:<4}  {_terminal_text(name.decode('utf-8', 'surrogateescape'))}")
     return 0
 
 
@@ -149,18 +154,19 @@ def _cmd_extract(args: argparse.Namespace) -> int:
             # Rescue mode: dump the file table directly, ignoring the directory
             # tree. Recovers content from containers whose children array is
             # broken (files present but not linked into any directory).
-            os.makedirs(args.dest, exist_ok=True)
-            n = 0
-            for fi in range(r.file_count):
-                name, size, sha, eoff, esz, codec = r.file_info(fi)
-                target = os.path.join(args.dest, f"{fi:05d}_{name.decode('utf-8', 'surrogateescape')}")
-                data = r.read_file(fi)
-                with open(target, "wb") as fh:
-                    fh.write(data)
-                n += 1
+            n = extract_flat(r, args.dest)
             print(f"extract: {n} files -> {args.dest}")
             return 0
-        pkg = find_package(r, kind=_kind_arg(args.package)) if args.package else r.packages[0]
+        if not args.package:
+            pkg = r.packages[0]
+        elif args.package in F.KIND_NAMES.values():
+            pkg = find_package(r, kind=_kind_arg(args.package))
+        else:
+            try:
+                index = int(args.package, 10)
+            except ValueError:
+                index = -1
+            pkg = r.packages[index] if 0 <= index < len(r.packages) else None
         if pkg is None:
             print(f"extract: no package matches {args.package!r}", file=sys.stderr)
             return 1
@@ -266,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         return int(args.fn(args))
-    except F.NupError as e:
+    except (F.NupError, OSError) as e:
         print(f"nup: error: {e}", file=sys.stderr)
         return 2
 

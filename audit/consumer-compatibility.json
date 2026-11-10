@@ -1,0 +1,73 @@
+{
+  "banana_commit": "7ea6a966e4be51d5e2ac0be08543ff44c036e447",
+  "fritchii_commit": "f66ea633db6058efe31a9611718019e5bd1667eb",
+  "checks": [
+    {
+      "fixture": "packed.nup",
+      "fritchii": "OK files=21 packages=3 cap=536870912\nMETA 288358607164088320 0 0 \"Compatibility title\" \"Compatibility studio\" \"1.2.3\" 758\nMETA 288358607164088320 458752 1 \"\" \"\" \"\" 0\nMETA 288358607164092417 0 2 \"\" \"\" \"\" 0\nOK files=21 packages=3 cap=4096",
+      "banana_java": "OK files=21 packages=3 title=Compatibility title publisher=Compatibility studio",
+      "banana_native_romfs_selectors": 3
+    },
+    {
+      "fixture": "edited.nup",
+      "fritchii": "OK files=21 packages=3 cap=536870912\nMETA 288358607164088320 0 0 \"Compatibility title\" \"Edited publisher\" \"1.2.3\" 758\nMETA 288358607164088320 458752 1 \"\" \"\" \"\" 0\nMETA 288358607164092417 0 2 \"\" \"\" \"\" 0\nOK files=21 packages=3 cap=4096",
+      "banana_java": "OK files=21 packages=3 title=Compatibility title publisher=Edited publisher",
+      "banana_native_romfs_selectors": 3
+    },
+    {
+      "fixture": "transferred.nup",
+      "fritchii": "OK files=21 packages=3 cap=536870912\nMETA 288358607164088320 0 0 \"Transferred title\" \"Transferred studio\" \"1.2.3\" 758\nMETA 288358607164088320 458752 1 \"\" \"\" \"\" 0\nMETA 288358607164092417 0 2 \"\" \"\" \"\" 0\nOK files=21 packages=3 cap=4096",
+      "banana_java": "OK files=21 packages=3 title=Transferred title publisher=Transferred studio",
+      "banana_native_romfs_selectors": 3
+    },
+    {
+      "fixture": "relocated.nup",
+      "fritchii": "OK files=21 packages=3 cap=536870912\nMETA 288358607164088320 0 0 \"Compatibility title\" \"Relocated publisher\" \"1.2.3\" 758\nMETA 288358607164088320 458752 1 \"\" \"\" \"\" 0\nMETA 288358607164092417 0 2 \"\" \"\" \"\" 0\nOK files=21 packages=3 cap=4096",
+      "banana_java": "OK files=21 packages=3 title=Compatibility title publisher=Relocated publisher",
+      "banana_native_romfs_selectors": 3
+    },
+    {
+      "fixture": "repacked.nup",
+      "fritchii": "OK files=21 packages=3 cap=536870912\nMETA 288358607164088320 0 0 \"Compatibility title\" \"Relocated publisher\" \"1.2.3\" 758\nMETA 288358607164088320 458752 1 \"\" \"\" \"\" 0\nMETA 288358607164092417 0 2 \"\" \"\" \"\" 0\nOK files=21 packages=3 cap=4096",
+      "banana_java": "OK files=21 packages=3 title=Compatibility title publisher=Relocated publisher",
+      "banana_native_romfs_selectors": 3
+    },
+    {
+      "fixture": "native-labels.nup",
+      "fritchii": "OK files=22 packages=3 cap=536870912\nMETA 288358607164088320 0 0 \"Compatibility title\" \"Compatibility studio\" \"1.2.3\" 758\nMETA 288358607164088320 458752 1 \"\" \"\" \"\" 0\nMETA 288358607164092417 0 2 \"\" \"\" \"\" 0\nOK files=22 packages=3 cap=4096",
+      "banana_java": "OK files=22 packages=3 title=Compatibility title publisher=Compatibility studio",
+      "banana_native_romfs_selectors": 3
+    },
+    {
+      "fixture": "standalone-update.nup",
+      "fritchii": "OK files=10 packages=1 cap=536870912\nMETA 288358607164088320 458752 1 \"Standalone title\" \"Standalone studio\" \"\" 758\nOK files=10 packages=1 cap=4096",
+      "banana_java": "OK files=10 packages=1 title=Standalone title publisher=Standalone studio",
+      "banana_native_romfs_selectors": 1
+    },
+    {
+      "fixture": "standalone-dlc.nup",
+      "fritchii": "OK files=1 packages=1 cap=536870912\nMETA 288358607164092417 0 2 \"Standalone title\" \"Standalone studio\" \"\" 758\nOK files=1 packages=1 cap=4096",
+      "banana_java": "OK files=1 packages=1 title=Standalone title publisher=Standalone studio",
+      "banana_native_romfs_selectors": 1
+    }
+  ],
+  "upstream_tests": {
+    "packed": {
+      "tests": 13,
+      "result": "passed",
+      "skipped": 0
+    },
+    "edited": {
+      "tests": 13,
+      "result": "passed",
+      "skipped": 0
+    }
+  },
+  "baseline_bytes_identical": {
+    "packed": true,
+    "edited": true,
+    "native_labels": true
+  },
+  "scope": "Compiled Fritchii loader/VFS with minimal filesystem/logging adapters; BananaNative native header and Java reader; synthetic-data preparation tests. No game boot.",
+  "baseline_commit": "12c6ba1d47c9e3759ffe3e61de25e77f1f59cd07"
+}

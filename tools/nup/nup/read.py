@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import io
 import mmap
 import os
 import struct
@@ -22,6 +23,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from types import TracebackType
+
+
+MAX_ZSTD_WINDOW = 256 << 20
 
 
 class _MappedSliceReader:
@@ -98,8 +102,12 @@ class NupReader:
             if self.super["file_size"] != real_size:
                 raise F.NupError(
                     f"file_size {self.super['file_size']} != actual {real_size}")
-            if self.super["toc_offset"] < F.HEADER_SIZE:
-                raise F.NupError("toc_offset before header end")
+            if self.super["toc_offset"] != self.super["header_size"]:
+                raise F.NupError("toc_offset does not match header_size")
+            if self.super["toc_size"] < F._toc_head_s.size:
+                raise F.NupError("TOC truncated")
+            if self.super["blob_offset"] > real_size:
+                raise F.NupError("blob_offset beyond file end")
             if self.super["blob_offset"] < self.super["toc_offset"] + self.super["toc_size"]:
                 raise F.NupError("blob region overlaps TOC")
             if self.super["blob_offset"] % F.EXTENT_ALIGN:
@@ -140,6 +148,8 @@ class NupReader:
     def _parse_toc(self, toc: bytes, cancel: Callable[[], bool] | None = None) -> None:
         magic, pkg_count, dir_count, file_count, pool_off, pool_size, _r = \
             F._toc_head_s.unpack_from(toc, 0)
+        if _r:
+            raise F.NupError("TOC reserved bytes not zero")
         if magic != F.TOC_MAGIC:
             raise F.NupError(f"bad TOC magic {magic!r}")
         if pkg_count != self.super["package_count"]:
@@ -174,6 +184,8 @@ class NupReader:
                 _check_cancel(cancel)
             off, ln, first, count, _r2 = F._dir_s.unpack_from(toc, pos)
             pos += F.DIR_SIZE
+            if _r2:
+                raise F.NupError("directory reserved bytes not zero")
             self.dirs.append((self._pool_str(off, ln), first, count))
 
         # (name, size, sha256, ext_off, ext_size, codec)
@@ -193,7 +205,12 @@ class NupReader:
     def _pool_str(self, off: int, ln: int) -> bytes:
         if off + ln > len(self.pool):
             raise F.NupError("string reference out of pool bounds")
-        return self.pool[off:off + ln]
+        value = self.pool[off:off + ln]
+        try:
+            value.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise F.NupError("node name is not UTF-8") from exc
+        return value
 
     def _check_bounds(self, cancel: Callable[[], bool] | None = None) -> None:
         file_size = self.super["file_size"]
@@ -201,6 +218,8 @@ class NupReader:
         for i, (name, size, sha, eoff, esz, codec) in enumerate(self.files):
             if i % 1024 == 0:
                 _check_cancel(cancel)
+            if codec == F.CODEC_RAW and esz != size:
+                raise F.NupError(f"raw extent size mismatch for {name!r}")
             if size == 0:
                 continue
             if eoff < blob_start or eoff + esz > file_size:
@@ -208,15 +227,49 @@ class NupReader:
             if eoff % F.EXTENT_ALIGN:
                 raise F.NupError(f"extent not {F.EXTENT_ALIGN}-aligned for {name!r}")
         slot_total = len(self.children)
-        used = 0
+        ranges = []
         for i, (name, first, count) in enumerate(self.dirs):
             if i % 1024 == 0:
                 _check_cancel(cancel)
             if first + count > slot_total:
                 raise F.NupError(f"child range out of bounds for dir {name!r}")
-            used += count
-        if used != slot_total:
-            raise F.NupError(f"child slots used {used} != total {slot_total}")
+            if count:
+                ranges.append((first, first + count))
+        cursor = 0
+        for first, end in sorted(ranges):
+            if first != cursor:
+                raise F.NupError("child slot ranges overlap or leave gaps")
+            cursor = end
+        if cursor != slot_total:
+            raise F.NupError("unreferenced child slots")
+        if any(cid >= self.dir_count + self.file_count for cid in self.children):
+            raise F.NupError("child reference out of bounds")
+        for _, first, count in self.dirs:
+            names = [self.dirs[cid][0] if cid < self.dir_count else self.files[cid - self.dir_count][0]
+                     for cid in self.children[first:first + count]]
+            if any(a >= b for a, b in zip(names, names[1:])):
+                raise F.NupError("directory children must be sorted with unique names")
+        # Check every component, including orphan subgraphs, without recursion.
+        colors = bytearray(self.dir_count)
+        for root in range(self.dir_count):
+            if colors[root]:
+                continue
+            stack = [(root, False)]
+            while stack:
+                _check_cancel(cancel)
+                node, leaving = stack.pop()
+                if leaving:
+                    colors[node] = 2
+                    continue
+                if colors[node] == 1:
+                    raise F.NupError("directory graph contains a cycle")
+                if colors[node] == 2:
+                    continue
+                colors[node] = 1
+                stack.append((node, True))
+                _, first, count = self.dirs[node]
+                stack.extend((cid, False) for cid in self.children[first:first + count]
+                             if cid < self.dir_count)
         for p in self.packages:
             if p.root_dir >= self.dir_count:
                 raise F.NupError(f"package {p.index}: root_dir out of bounds")
@@ -227,8 +280,29 @@ class NupReader:
                 raise F.NupError(f"package {p.index}: meta block out of bounds")
             if p.flags & ~F.PKG_FLAG_STANDALONE_UPDATE:
                 raise F.NupError(f"package {p.index}: unknown package flags {p.flags:#x}")
+        toc_end = self.super["toc_offset"] + self.super["toc_size"]
+        regions = []
+        for _, size, sha, offset, stored, codec in self.files:
+            if size:
+                regions.append((offset, offset + stored, ("extent", size, sha, int(codec))))
+        from .meta import parse_block
+        for package in self.packages:
+            if package.meta_size:
+                if package.meta_offset < toc_end:
+                    raise F.NupError("metadata overlaps header or TOC")
+                regions.append((package.meta_offset, package.meta_offset + package.meta_size, ("metadata",)))
+        previous = None
+        for region in sorted(set(regions)):
+            if previous and region[0] < previous[1] and region != previous:
+                raise F.NupError("file extents or metadata regions overlap inconsistently")
+            previous = region
+        for package in self.packages:
+            if package.meta_size:
+                parse_block(bytes(self._mm[package.meta_offset:package.meta_offset + package.meta_size]))
         # SPEC §3.1.2: update packages need a base in the same container, or
         # the standalone_update flag (record flags, offset 0x19, bit 0).
+        if sum(p.kind == F.KIND_BASE for p in self.packages) > 1:
+            raise F.NupError("container has more than one base package")
         has_base = any(p.kind == F.KIND_BASE for p in self.packages)
         for i, p in enumerate(self.packages):
             if i % 1024 == 0:
@@ -268,7 +342,13 @@ class NupReader:
             nonlocal written
             if written + len(chunk) > size:
                 raise F.NupError(f"size overflow while extracting {name!r}")
-            output.write(chunk)
+            position = 0
+            while position < len(chunk):
+                check_cancel()
+                count = output.write(memoryview(chunk)[position:])
+                if not isinstance(count, int) or count <= 0 or count > len(chunk) - position:
+                    raise OSError("short or invalid output write")
+                position += count
             digest.update(chunk)
             written += len(chunk)
 
@@ -288,12 +368,18 @@ class NupReader:
 
             source = _MappedSliceReader(self._mm, extent_offset, extent_size)
             try:
-                with zstandard.ZstdDecompressor().stream_reader(
+                header = self._mm[extent_offset:extent_offset + min(extent_size, 18)]
+                frame = zstandard.get_frame_parameters(header)
+                if frame.content_size != size:
+                    raise F.NupError(f"Zstandard frame size does not match file size for {name!r}")
+                if frame.window_size > MAX_ZSTD_WINDOW:
+                    raise F.NupError("Zstandard frame exceeds the 256 MiB decoder window limit")
+                with zstandard.ZstdDecompressor(max_window_size=MAX_ZSTD_WINDOW // 1024).stream_reader(
                     source, read_size=4 << 20, closefd=False,
                 ) as decompressed:
                     while True:
                         check_cancel()
-                        chunk = decompressed.read(4 << 20)
+                        chunk = decompressed.read(min(4 << 20, size - written + 1))
                         if not chunk:
                             break
                         write_chunk(chunk)
@@ -310,23 +396,7 @@ class NupReader:
         return written
 
     def read_file(self, file_index: int) -> bytes:
-        name, size, sha, eoff, esz, codec = self.files[file_index]
-        if size == 0:
-            data = b""
-        elif codec == F.CODEC_RAW:
-            data = self._mm[eoff:eoff + esz]
-            if len(data) != esz:
-                raise F.NupError(f"short read for {name!r}")
-        elif codec == F.CODEC_ZSTD:
-            import zstandard
-            comp = self._mm[eoff:eoff + esz]
-            if len(comp) != esz:
-                raise F.NupError(f"short read for {name!r}")
-            dctx = zstandard.ZstdDecompressor()
-            data = dctx.decompress(comp, max_output_size=size)
-        else:
-            raise F.NupError(f"unknown codec {codec}")
-        assert len(F.Codec) == 2
-        if len(data) != size:
-            raise F.NupError(f"size mismatch for {name!r}: {len(data)} != {size}")
-        return data
+        # Use the same bounded decoder and hash checks as streaming extraction.
+        output = io.BytesIO()
+        self.copy_file(file_index, output)
+        return output.getvalue()

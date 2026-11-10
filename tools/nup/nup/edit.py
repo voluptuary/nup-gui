@@ -13,6 +13,10 @@ import argparse
 import hashlib
 import os
 import time
+import tempfile
+import stat
+from collections.abc import Callable
+from dataclasses import replace
 from typing import Final
 
 from . import format as F
@@ -54,12 +58,21 @@ def _resolve_package(r: NupReader, package: str | None) -> PackageInfo:
     return next((p for p in r.packages if p.kind == F.KIND_BASE), r.packages[0])
 
 
-def _replace_retry(tmp: str, path: str, attempts: int = 6) -> None:
+def _file_identity(info) -> tuple:
+    # Windows/Wine stat() reports creation time here while fstat() may report
+    # change time after a rename. Keep comparable identity/content fields.
+    change_time = info.st_ctime_ns if os.name != "nt" else None
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, change_time)
+
+
+def _replace_retry(tmp: str, path: str, attempts: int = 6, expected: tuple | None = None) -> None:
     """os.replace can transiently fail with PermissionError on Windows when
     another process (antivirus, indexer, cloud sync) still holds the
     destination - back off and retry instead of failing the whole edit."""
     for attempt in range(attempts):
         try:
+            if expected is not None and _file_identity(os.stat(path)) != expected:
+                raise F.NupError("package changed while editing; refusing to overwrite a newer file")
             os.replace(tmp, path)
             return
         except PermissionError:
@@ -74,12 +87,16 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
          lang_icons: dict[str, str] | None = None, clear_name: bool = False,
          clear_publisher: bool = False, clear_display_version: bool = False,
          clear_icon: bool = False,
-         app_records: dict[int, bytes] | None = None) -> PackageInfo:
+         app_records: dict[int, bytes] | None = None,
+         validate: Callable[[str], None] | None = None) -> PackageInfo:
     """Edit one package's meta block in place. Returns the edited package."""
-    tmp = path + ".tmp"
+    tmp = None
     try:
         r = NupReader(path)  # full validation before anything is written
         try:
+            original_info = os.fstat(r._fh.fileno())
+            original_mode = stat.S_IMODE(original_info.st_mode)
+            original_identity = _file_identity(original_info)
             target = _resolve_package(r, package)
             original_blocks = [_old_block(r, p) for p in r.packages]
             records = [M.parse_block(block) for block in original_blocks]
@@ -139,7 +156,9 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
                                       s["blob_offset"], new_file_size,
                                       len(r.packages), s["flags"], s["uuid"])
 
-            with open(tmp, "wb") as out:
+            with tempfile.NamedTemporaryFile(mode="w+b", prefix=".nup-edit-", suffix=".tmp",
+                                             dir=os.path.dirname(os.path.abspath(path)), delete=False) as out:
+                tmp = out.name
                 copy_pos = 0
                 while copy_pos < copy_end:
                     chunk = r._mm[copy_pos:min(copy_pos + _COPY_CHUNK, copy_end)]
@@ -150,6 +169,8 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
                 out.write(superblock)
                 out.seek(s["toc_offset"])
                 out.write(toc)
+            if _file_identity(os.fstat(r._fh.fileno())) != original_identity:
+                raise F.NupError("package changed while its contents were being copied")
         finally:
             # Release the original (file handle and mmap) before replacing it:
             # on Windows a rename over a still-open file fails with
@@ -158,11 +179,15 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
 
         with NupReader(tmp):  # structural validation of the result
             pass
-        _replace_retry(tmp, path)
-        return target
+        if validate is not None:
+            validate(tmp)
+        os.chmod(tmp, original_mode)
+        _replace_retry(tmp, path, expected=original_identity)
+        return replace(target, meta_offset=new_offsets[idx][0], meta_size=new_offsets[idx][1])
     except BaseException:
         try:
-            os.unlink(tmp)  # keep the original, drop the partial result
+            if tmp is not None:
+                os.unlink(tmp)  # Only remove the unique temporary file we created.
         except OSError:
             pass
         raise

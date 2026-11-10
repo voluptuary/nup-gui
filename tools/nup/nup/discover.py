@@ -12,10 +12,13 @@ from dataclasses import dataclass, field
 import os
 import re
 import struct
+import stat
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from . import format as F
 from .errors import OperationCancelled
+from .sourceio import open_source, is_link
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -92,7 +95,7 @@ def _read_build_id(src: str) -> bytes | None:
     for cand in ("exefs/main", "main"):
         p = os.path.join(src, cand)
         if os.path.isfile(p):
-            with open(p, "rb") as fh:
+            with open_source(p) as fh:
                 head = fh.read(0x60)
             if len(head) == 0x60 and (head[:4] == b"NSO0" or head[0x10:0x14] == b"NRO0"):
                 return head[0x40:0x60]
@@ -108,7 +111,7 @@ def _resolve_title_id(
     _check_cancel(cancel)
     npdm_path = _find_npdm(pkg.src)
     if npdm_path:
-        with open(npdm_path, "rb") as fh:
+        with open_source(npdm_path) as fh:
             pkg.npdm = fh.read()
         pid = parse_npdm_program_id(pkg.npdm)
         if pid is not None and pid != 0:
@@ -214,6 +217,8 @@ def discover(
         dlc_dir = os.path.join(src, "dlc")
         if os.path.isdir(dlc_dir):
             packages.extend(_collect_dlcs(dlc_dir, cancel))
+    elif os.path.isdir(os.path.join(src, "dlc")):
+        packages.extend(_collect_dlcs(os.path.join(src, "dlc"), cancel))
     elif _looks_like_content(src):
         base = PackInput(F.KIND_BASE, src)
         _resolve_title_id(base, base_title_id)
@@ -260,7 +265,11 @@ class Tree:
     def add_tree(self, src: str) -> DirObj:
         return self._walk(src, b"")
 
-    def _walk(self, src: str, name: bytes) -> DirObj:
+    def _walk(self, src: str, name: bytes, depth: int = 0) -> DirObj:
+        if depth > 256:
+            raise F.NupError("source tree exceeds the supported 256 directory levels")
+        if is_link(os.lstat(src)):
+            raise F.NupError(f"source directory cannot be a link or junction: {src!r}")
         _check_cancel(self.cancel)
         node = DirObj(name)
         try:
@@ -270,12 +279,22 @@ class Tree:
             raise SystemExit(f"pack: cannot read {src}: {exc}")
         for entry in entries:
             _check_cancel(self.cancel)
-            if os.path.abspath(entry.path) in self.excluded_files:
-                continue
             ename = entry.name.encode("utf-8", "surrogateescape")
+            if ename in self.artifacts:
+                continue
+            try:
+                ename.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise F.NupError(f"source name is not UTF-8: {entry.name!r}") from exc
+            info = entry.stat(follow_symlinks=False)
+            if is_link(info) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                raise F.NupError(f"source entry is a link or special file: {entry.path!r}")
+            canonical = str(Path(entry.path).resolve())
+            if canonical in self.excluded_files:
+                continue
             if entry.is_dir(follow_symlinks=False):
-                child = self._walk(entry.path, ename)
-                if child.children or os.path.abspath(entry.path) not in self.prune_dirs:
+                child = self._walk(entry.path, ename, depth + 1)
+                if child.children or canonical not in self.prune_dirs:
                     node.children.append(child)
             elif ename not in self.artifacts:
                 node.children.append(FileObj(ename, entry.path))

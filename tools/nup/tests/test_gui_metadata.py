@@ -17,7 +17,7 @@ from nup.pack import pack
 from test_metadata import image_bytes, replace_metadata, relayout_package
 
 
-@unittest.skipUnless(os.environ.get("DISPLAY"), "GUI tests require Xvfb or a display")
+@unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "GUI tests require Windows or Xvfb/display")
 class GuiMetadataTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -265,6 +265,124 @@ class GuiMetadataTests(unittest.TestCase):
         self.assertEqual(load_application(target).publisher, "New publisher")
         self.assertFalse(self.app.error_log_path.exists())
 
+    def test_transfer_preserves_target_fields_absent_from_source(self):
+        original = self.work / "partial-source.nup"
+        target = self.work / "complete-target.nup"
+        pack(str(original), str(self.source))
+        pack(str(target), str(self.source))
+        replace_metadata(original, [serialize_block({5: b"New title"})])
+        icon = image_bytes("PNG")
+        replace_metadata(target, [serialize_block({5: b"Old title", 6: b"Keep publisher", 4: b"Keep version", 3: icon})])
+        self.app.copy_nup_button.invoke()
+        self.app.editor_source.set(str(original))
+        self.app.editor_title.set("Manual title")
+        self.app.editor_target.set(str(target))
+        self.assertEqual(self.app.editor_title.get(), "Manual title")
+        with patch("windows_gui.messagebox.askyesno", return_value=True), patch("windows_gui.messagebox.showinfo"), patch("windows_gui.messagebox.showerror") as error:
+            self.app.editor_transfer_button.invoke()
+            deadline = time.monotonic() + 10
+            while self.app.busy and time.monotonic() < deadline:
+                self.root.update()
+                time.sleep(0.01)
+            self.assertFalse(self.app.busy)
+            error.assert_not_called()
+        result = load_application(target)
+        self.assertEqual((result.title, result.publisher, result.version, result.icon),
+                         ("Manual title", "Keep publisher", "Keep version", icon))
+
+    def test_failed_logging_does_not_strand_a_failed_metadata_worker(self):
+        original = self.work / "source.nup"
+        target = self.work / "target.nup"
+        pack(str(original), str(self.source))
+        pack(str(target), str(self.source))
+        replace_metadata(original, [serialize_block({5: b"Source"})])
+        self.app.copy_nup_button.invoke()
+        self.app.editor_source.set(str(original))
+        self.app.editor_target.set(str(target))
+        with patch("windows_gui.ErrorLogHandler._open", side_effect=PermissionError("No writable logs")), patch("windows_gui.copy_application", side_effect=OSError("Write failed")), patch("windows_gui.messagebox.askyesno", return_value=True), patch("windows_gui.messagebox.showerror") as error:
+            self.app.editor_transfer_button.invoke()
+            deadline = time.monotonic() + 10
+            while self.app.busy and time.monotonic() < deadline:
+                self.root.update()
+                time.sleep(0.01)
+            self.assertFalse(self.app.busy)
+            self.assertFalse(self.app.editor_progress.winfo_ismapped())
+            self.assertIn("could not be written", error.call_args.args[1])
+
+    def test_thread_start_failure_restores_controls_and_progress(self):
+        from unittest.mock import Mock
+        original = self.work / "source.nup"
+        pack(str(original), str(self.source))
+        self.app.copy_nup_button.invoke()
+        self.app.editor_source.set(str(original))
+        self.app.editor_publisher.set("Changed publisher")
+        thread = Mock()
+        thread.start.side_effect = RuntimeError("Thread unavailable")
+        with patch("windows_gui.threading.Thread", return_value=thread), patch("windows_gui.messagebox.askyesno", return_value=True), patch("windows_gui.messagebox.showerror") as error:
+            self.app.editor_update_button.invoke()
+            deadline = time.monotonic() + 10
+            while self.app.busy and time.monotonic() < deadline:
+                self.root.update()
+                time.sleep(0.01)
+            self.assertFalse(self.app.busy)
+            self.assertFalse(self.app.editor_progress.winfo_ismapped())
+            self.assertFalse(self.app.editor_update_button.instate(["disabled"]))
+            error.assert_called_once()
+
+    def test_pillow_pixel_bomb_is_reported_without_a_callback_crash(self):
+        from PIL import Image
+        artwork = self.work / "bomb.png"
+        artwork.write_bytes(image_bytes("PNG"))
+        with patch("windows_gui.Image.open", side_effect=Image.DecompressionBombError("Huge image")):
+            self.app.icon.set(str(artwork))
+        self.assertIsNone(self.app.icon_image_ref)
+        self.assertIn("Cannot preview", self.app.icon_preview_label.cget("text"))
+        self.assertIn("Huge image", self.app.error_log_path.read_text(encoding="utf-8"))
+
+    def test_preview_does_not_load_other_pillow_formats(self):
+        from PIL import Image
+        image = self.work / "unsupported.tiff"
+        Image.new("RGB", (8, 8), "blue").save(image, format="TIFF")
+        self.app.icon.set(str(image))
+        self.assertIsNone(self.app.icon_image_ref)
+        self.assertIn("Cannot preview", self.app.icon_preview_label.cget("text"))
+        self.assertTrue(self.app.error_log_path.exists())
+
+    def test_unchanged_imported_fields_keep_literal_source_bytes(self):
+        original = self.work / "literal-source.nup"
+        target = self.work / "literal-target.nup"
+        pack(str(original), str(self.source))
+        pack(str(target), str(self.source))
+        replace_metadata(original, [serialize_block({5: b"  Literal title  "})])
+        self.app.copy_nup_button.invoke()
+        self.app.editor_source.set(str(original))
+        self.app.editor_target.set(str(target))
+        self.app.editor_publisher.set("Updated publisher")
+        with patch("windows_gui.messagebox.askyesno", return_value=True), patch("windows_gui.messagebox.showinfo"), patch("windows_gui.messagebox.showerror") as error:
+            self.app.editor_transfer_button.invoke()
+            deadline = time.monotonic() + 10
+            while self.app.busy and time.monotonic() < deadline:
+                self.root.update()
+                time.sleep(0.01)
+            self.assertFalse(self.app.busy)
+            error.assert_not_called()
+        from nup.access import meta_records
+        from nup.read import NupReader
+        with NupReader(str(target)) as reader:
+            self.assertEqual(dict(meta_records(reader, reader.packages[0]))[5], b"  Literal title  ")
+
+    def test_long_metadata_preview_does_not_hide_actions_or_truncate_edits(self):
+        original = self.work / "long-metadata.nup"
+        pack(str(original), str(self.source))
+        title = "T" * 5000
+        replace_metadata(original, [serialize_block({5: title.encode(), 6: b"P" * 5000})])
+        self.app.copy_nup_button.invoke()
+        self.app.editor_source.set(str(original))
+        self.root.update()
+        self.assertEqual(self.app.editor_title.get(), title)
+        y = self.app.editor_frame.winfo_y() + self.app.editor_transfer_button.winfo_rooty() - self.app.editor_frame.winfo_rooty()
+        self.assertLessEqual(y + self.app.editor_transfer_button.winfo_height(), self.root.winfo_height())
+
 
 class ErrorLogTests(unittest.TestCase):
     def setUp(self):
@@ -312,4 +430,4 @@ class ErrorLogTests(unittest.TestCase):
         logger.error("Fallback error")
         destination = fallback / "NUP Packager" / "error.log"
         self.assertIn("Fallback error", destination.read_text(encoding="utf-8"))
-        self.assertEqual(Path(logger.handlers[0].baseFilename), destination)
+        self.assertTrue(Path(logger.handlers[0].baseFilename).samefile(destination))

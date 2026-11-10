@@ -2,6 +2,41 @@
 
 This document records meaningful changes and enhancements made to `nup-gui` and its tooling.
 
+## 0.3.1 adversarial audit and compatibility validation (2026-11-10)
+
+- Completed the source/build/CI audit; [AUDIT.md](AUDIT.md) records 16 finding
+  groups, fixes, evidence, and remaining limits. Hardened extraction paths,
+  container structures, streaming hashes/decompression, source reads, temporary
+  files, concurrent edits, staged verification, metadata preservation, sidecar
+  validation, GUI error recovery, and preview decoding.
+- Preserved NUP v1, existing TLVs/codecs, unknown metadata and opaque tails.
+  Compared ordinary packing/editing output byte-for-byte with the pre-audit
+  implementation. Actual BananaNative and Fritchii readers accepted eight
+  fixtures; 26 upstream BananaNative tests passed across original/edited inputs.
+  See audit/consumer-compatibility.json and the reproducible consumer runner.
+  These checks do not claim real-game boot or native ARM translation validation.
+- Validation: 73 Linux/Xvfb tests passed; Windows Python/Wine ran 70 tests
+  successfully with three POSIX/symlink capability skips. A focused final Windows
+  filename test and rebuilt executable message-loop smoke test also passed.
+  Wine can report symlink creation success without creating a link; capability
+  tests now verify the link exists. Windows stat/fstat creation-time differences
+  are excluded from edit identity checks while inode/size/mtime remain checked.
+- Examined earlier native Windows CI failures: canonicalized generated artwork
+  exclusions across short/long Windows paths to prevent extra content on repack;
+  log-path assertions now compare filesystem identity. Manual CI dispatch was
+  denied by the current GitHub integration permissions (HTTP 403).
+- Source installs now require Python 3.11+ and Pillow 13+; the executable retains
+  Windows Python 3.12.10. Updated pip/setuptools/PyInstaller floors; the resolved
+  ten-package Windows inventory has no known Python-package advisories in the
+  recorded scan. This does not audit CPython, OS, or vendored native libraries.
+- Moved Wine build scratch data into a guarded per-user cache. Updated AGENTS.md
+  with recovery/validation instructions. CI now targets gui, runs GUI tests on
+  Windows, pins official action releases, and uploads the documented ZIP.
+- Rebuilt the 0.3.1 test executable with internal compression and no UPX, and
+  prepared its refreshed single-executable ZIP and release notes. Retained
+  error-only logging, uniform windows/previews/progress, optional DLC metadata,
+  and the metadata transfer confirmation from earlier 0.3.1 changes.
+
 ## 0.3.1 metadata rewrite repair (2026-11-10)
 
 - Investigated files/error.log. Its temporary-result validation failure was

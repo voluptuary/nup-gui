@@ -14,7 +14,7 @@ import hashlib
 import os
 import struct
 import sys
-from typing import IO, TYPE_CHECKING, TypedDict, NotRequired
+from typing import IO, TYPE_CHECKING, TypedDict
 
 try:
     import zstandard
@@ -27,6 +27,7 @@ from .roundtrip import read_sidecar
 from .icons import detect_icon, is_supported_image
 from .discover import ARTIFACT_NAMES, DirObj, FILE_TAG, PackInput, Tree, discover
 from .errors import OperationCancelled
+from .sourceio import open_source
 
 if TYPE_CHECKING:
     from .discover import FileObj
@@ -103,8 +104,8 @@ def _write_extents(
     seen: dict[bytes, tuple[int, int, int]] = {}  # sha256 -> (offset, size, codec)
     for i, fnode in enumerate(tree.files):
         _check_cancel(cancel)
-        with open(fnode.src_path, "rb") as fh:
-            fnode.size = os.path.getsize(fnode.src_path)
+        with open_source(fnode.src_path) as fh:
+            fnode.size = os.fstat(fh.fileno()).st_size
 
             # Pass 1 - hash the whole file (streamed) for the dedup table.
             h = hashlib.sha256()
@@ -136,7 +137,9 @@ def _write_extents(
                 if fnode.size <= STREAM_THRESHOLD:
                     # Small enough to hold in RAM; one-shot keeps frames
                     # byte-identical with earlier builds.
-                    data = fh.read()
+                    data = fh.read(fnode.size + 1)
+                    if len(data) != fnode.size or hashlib.sha256(data).digest() != fnode.sha256:
+                        raise F.NupError(f"source changed while packing: {fnode.src_path!r}")
                     _check_cancel(cancel)
                     payload, codec = data, F.CODEC_RAW
                     if zc is not None:
@@ -157,6 +160,7 @@ def _write_extents(
                         stored = 0
                         bail = False
                         left = fnode.size
+                        content_hash = hashlib.sha256()
                         while left and not bail:
                             _check_cancel(cancel)
                             chunk = fh.read(min(_STREAM_CHUNK, left))
@@ -164,6 +168,7 @@ def _write_extents(
                                 raise SystemExit(
                                     f"pack: {fnode.src_path!r} changed while packing")
                             left -= len(chunk)
+                            content_hash.update(chunk)
                             consumed = fnode.size - left
                             piece = co.compress(chunk)
                             if piece:
@@ -174,6 +179,8 @@ def _write_extents(
                                     # final frame cannot end up smaller
                                     bail = True
                         if not bail:
+                            if fh.read(1) or content_hash.digest() != fnode.sha256:
+                                raise F.NupError(f"source changed while packing: {fnode.src_path!r}")
                             _check_cancel(cancel)
                             piece = co.flush()
                             if piece:
@@ -186,6 +193,7 @@ def _write_extents(
                         out.seek(aligned)  # overwrite whatever the bailed frame wrote
                         fh.seek(0)  # the bailed compression pass left the input mid-file
                         left = fnode.size
+                        content_hash = hashlib.sha256()
                         while left:
                             _check_cancel(cancel)
                             chunk = fh.read(min(_STREAM_CHUNK, left))
@@ -193,7 +201,10 @@ def _write_extents(
                                 raise SystemExit(
                                     f"pack: {fnode.src_path!r} changed while packing")
                             left -= len(chunk)
+                            content_hash.update(chunk)
                             out.write(chunk)
+                        if fh.read(1) or content_hash.digest() != fnode.sha256:
+                            raise F.NupError(f"source changed while packing: {fnode.src_path!r}")
                         fnode.extent_size = fnode.size
                         fnode.codec = F.CODEC_RAW
                     else:
@@ -300,11 +311,11 @@ def _split_groups(
     return groups
 
 
-class PackMeta(TypedDict):
-    names: NotRequired[dict[str | None, str] | None]
-    icons: NotRequired[dict[str | None, str] | None]
-    display_version: NotRequired[str | None]
-    publisher: NotRequired[str | None]
+class PackMeta(TypedDict, total=False):
+    names: dict[str | None, str] | None
+    icons: dict[str | None, str] | None
+    display_version: str | None
+    publisher: str | None
     
 
 def pack(
@@ -382,7 +393,7 @@ def pack(
         groups = [(out_path, packages)]
 
     for group_path, _ in groups:
-        if os.path.exists(group_path):
+        if os.path.lexists(group_path):
             raise SystemExit(f"pack: refusing to overwrite {group_path}")
 
     # App-level metadata (names, icons, versions) describes the base game:
@@ -391,7 +402,7 @@ def pack(
     app_metadata = PackMeta(names=names, icons=icons, display_version=display_version,
                             publisher=publisher)
     for group_path, group in groups:
-        meta = app_metadata if any(p.kind == F.KIND_BASE for p in group) else {}
+        meta = app_metadata if not split or any(p.kind == F.KIND_BASE for p in group) else {}
         _pack_container(
             group_path,
             src,
@@ -419,7 +430,7 @@ def _pack_container(
     progress: Callable[[int, int, FileObj], None] | None = None,
     cancel: Callable[[], bool] | None = None,
 ) -> list[PackInput]:
-    if os.path.exists(out_path):
+    if os.path.lexists(out_path):
         raise SystemExit(f"pack: refusing to overwrite {out_path}")
 
     # SPEC §3.1.2: an update package in a container without its base must be
@@ -468,26 +479,36 @@ def _pack_container(
 
     zc = zstandard.ZstdCompressor(level=level) if have_zstd() else None
 
-    with open(out_path, "wb") as out:
-        out.write(b"\0" * blob_offset)  # placeholder for header + TOC
-        blob_cursor = _write_extents(out, tree, zc, blob_offset, progress, cancel)
-        _check_cancel(cancel)
-        dump_label = os.path.basename(os.path.normpath(src))
-        meta_offsets, blob_cursor = _write_meta_blocks(out, packages, dump_label,
-                                                       names, icons, display_version,
-                                                       blob_cursor,
-                                                       publisher=publisher)
-        file_size = blob_cursor
+    created = False
+    try:
+        with open(out_path, "xb") as out:
+            created = True
+            out.write(b"\0" * blob_offset)  # placeholder for header + TOC
+            blob_cursor = _write_extents(out, tree, zc, blob_offset, progress, cancel)
+            _check_cancel(cancel)
+            dump_label = os.path.basename(os.path.normpath(src))
+            meta_offsets, blob_cursor = _write_meta_blocks(out, packages, dump_label,
+                                                           names, icons, display_version,
+                                                           blob_cursor,
+                                                           publisher=publisher)
+            file_size = blob_cursor
 
-        toc = _build_toc(tree, pkg_records, meta_offsets, dir_count, file_count,
-                         toc_size)
+            toc = _build_toc(tree, pkg_records, meta_offsets, dir_count, file_count,
+                             toc_size)
 
-        toc_sha = hashlib.sha256(toc).digest()
-        superblock = F.pack_super(F.MAGIC, F.HEADER_SIZE, 1, F.HEADER_SIZE, toc_size,
-                                  toc_sha, blob_offset, file_size, len(pkg_records), 0,
-                                  uuid)
-        out.seek(0)
-        out.write(superblock)
-        out.write(toc)
-        out.truncate(file_size)
+            toc_sha = hashlib.sha256(toc).digest()
+            superblock = F.pack_super(F.MAGIC, F.HEADER_SIZE, 1, F.HEADER_SIZE, toc_size,
+                                      toc_sha, blob_offset, file_size, len(pkg_records), 0,
+                                      uuid)
+            out.seek(0)
+            out.write(superblock)
+            out.write(toc)
+            out.truncate(file_size)
+    except BaseException:
+        if created:
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
+        raise
     return packages

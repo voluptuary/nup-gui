@@ -251,7 +251,7 @@ class MetadataTests(unittest.TestCase):
                 path = self.package(f"edit-{first}-{padding}.nup")
                 relayout_package(path, metadata_first=first, header_padding=padding)
                 self.assertEqual(load_application(path).publisher, "")
-                expected = (False, ["toc_offset 0xc0 != 0x80 (v1)"]) if padding else (True, [])
+                expected = (True, [])
                 self.assertEqual(verify(str(path), deep=True), expected)
                 before = snapshot(path)
                 with NupReader(str(path)) as reader:
@@ -260,7 +260,7 @@ class MetadataTests(unittest.TestCase):
                 edit(str(path), publisher="Studio: & $ 日本語")
                 self.assertEqual(load_application(path).publisher, "Studio: & $ 日本語")
                 self.assertEqual(snapshot(path)[:4], before[:4])
-                expected = (False, ["toc_offset 0xc0 != 0x80 (v1)"]) if padding else (True, [])
+                expected = (True, [])
                 self.assertEqual(verify(str(path), deep=True), expected)
                 with NupReader(str(path)) as reader:
                     self.assertEqual(reader.files, extents)
@@ -284,7 +284,7 @@ class MetadataTests(unittest.TestCase):
                 self.assertEqual((result.title, result.publisher), ("Copied: & $", "New studio: & $"))
                 self.assertEqual(snapshot(target)[:4], before[:4])
                 self.assertEqual(source.read_bytes(), original_source)
-                expected = (False, ["toc_offset 0xc0 != 0x80 (v1)"]) if padding else (True, [])
+                expected = (True, [])
                 self.assertEqual(verify(str(target), deep=True), expected)
                 with NupReader(str(target)) as reader:
                     records = dict(meta_records(reader, reader.packages[0]))
@@ -298,11 +298,94 @@ class MetadataTests(unittest.TestCase):
         relayout_package(path, metadata_first=True)
         original = path.read_bytes()
         def fail_temporary(candidate):
-            if candidate == str(path) + ".tmp":
+            if Path(candidate).name.startswith(".nup-edit-"):
                 raise F.NupError("simulated validation failure")
             return NupReader(candidate)
         with patch("nup.edit.NupReader", side_effect=fail_temporary):
             with self.assertRaisesRegex(F.NupError, "simulated validation failure"):
                 edit(str(path), publisher="New publisher")
         self.assertEqual(path.read_bytes(), original)
-        self.assertFalse(Path(str(path) + ".tmp").exists())
+        self.assertFalse(list(path.parent.glob(".nup-edit-*.tmp")))
+
+    def test_nacp_and_localized_sources_override_defaults_and_preserve_missing_fields(self):
+        source = self.package("fallback-source.nup")
+        target = self.package("fallback-target.nup")
+        nacp = bytearray(0x4000)
+        nacp[:10] = b"NACP title"
+        target_nacp = bytearray(0x4000)
+        target_nacp[0x200:0x20A] = b"Old studio"
+        icon = image_bytes("PNG")
+        replace_metadata(source, [serialize_block({2: bytes(nacp), 10: _encode_localized({"en-us": icon})})])
+        replace_metadata(target, [serialize_block({2: bytes(target_nacp), 5: b"Stale title", 3: image_bytes()})])
+        copied = copy_application(str(source), str(target))
+        self.assertEqual((copied.title, copied.publisher, copied.icon), ("NACP title", "Old studio", icon))
+        self.assertEqual(copied.records[2], bytes(nacp))
+        self.assertEqual(copied.records[10], _encode_localized({"en-us": icon}))
+
+    def test_failed_application_verification_keeps_original_target_unchanged(self):
+        source = self.package("verification-source.nup")
+        (self.source / "updates/65536/romfs").mkdir(parents=True)
+        (self.source / "updates/65536/romfs/patch").write_bytes(b"patch data")
+        target = self.package("verification-target.nup")
+        nacp = bytearray(0x4000)
+        nacp[:10] = b"Base title"
+        replace_metadata(target, [serialize_block({2: bytes(nacp)}), serialize_block({5: b"Update title"})])
+        replace_metadata(source, [serialize_block({5: b"Imported title"})])
+        before = target.read_bytes()
+        with self.assertRaisesRegex(Exception, "verification failed"):
+            copy_application(str(source), str(target), clear_name=True)
+        self.assertEqual(target.read_bytes(), before)
+
+    def test_update_only_package_keeps_explicit_application_metadata(self):
+        import shutil
+        shutil.rmtree(self.source / 'base')
+        (self.source / 'updates/65536/romfs').mkdir(parents=True)
+        (self.source / 'updates/65536/romfs/patch').write_bytes(b'patch data')
+        path = self.work / 'standalone.nup'
+        pack(str(path), str(self.source), names={None: 'Standalone title'}, publisher='Studio', display_version='2.0')
+        actual = load_application(path)
+        self.assertEqual((actual.title, actual.publisher, actual.version), ('Standalone title', 'Studio', '2.0'))
+        self.assertEqual(verify(str(path), deep=True), (True, []))
+
+    def test_dlc_only_dump_extracts_and_repacks_losslessly(self):
+        import shutil
+        shutil.rmtree(self.source / 'base')
+        (self.source / 'dlc/040074a01bf13001/0/romfs').mkdir(parents=True)
+        (self.source / 'dlc/040074a01bf13001/0/romfs/data').write_bytes(b'addon payload')
+        path = self.work / 'dlc.nup'
+        pack(str(path), str(self.source), names={None: 'DLC title'})
+        before = snapshot(path)
+        restored = self.work / 'restored-dlc'
+        with NupReader(str(path)) as reader:
+            extract_dump(reader, str(restored))
+        repacked = self.work / 'repacked-dlc.nup'
+        pack(str(repacked), str(restored))
+        self.assertEqual(snapshot(repacked), before)
+        self.assertEqual(verify(str(repacked), deep=True), (True, []))
+
+    def test_copy_preserves_literal_default_metadata_bytes_without_overrides(self):
+        source = self.package('literal-source.nup')
+        target = self.package('literal-target.nup')
+        records = {5: b'  Literal title  ', 6: b'  Literal publisher  ', 4: b' 1.0 '}
+        replace_metadata(source, [serialize_block(records)])
+        copy_application(str(source), str(target))
+        with NupReader(str(target)) as reader:
+            actual = dict(meta_records(reader, reader.packages[0]))
+        for kind, payload in records.items():
+            self.assertEqual(actual[kind], payload)
+
+    def test_edit_does_not_overwrite_a_concurrent_newer_package(self):
+        path = self.package('concurrent.nup')
+        def concurrent_edit(_temporary):
+            edit(str(path), publisher='Concurrent publisher')
+        with self.assertRaisesRegex(Exception, 'changed while editing'):
+            edit(str(path), publisher='Stale publisher', validate=concurrent_edit)
+        self.assertEqual(load_application(path).publisher, 'Concurrent publisher')
+        self.assertFalse(list(path.parent.glob('.nup-edit-*.tmp')))
+
+    def test_edit_returns_the_updated_package_offsets_and_sizes(self):
+        path = self.package('returned-record.nup')
+        relayout_package(path, metadata_first=True)
+        updated = edit(str(path), publisher='Updated publisher')
+        with NupReader(str(path)) as reader:
+            self.assertEqual(updated, reader.packages[0])

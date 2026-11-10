@@ -10,7 +10,9 @@ before building and revise them whenever they learn a recovery step that is not 
 ## Project map
 
 - Work only in `https://github.com/voluptuary/nup-gui` on branch `gui`.
-  Keep `origin` as the only Git remote. Do not push, pull, commit, or open
+  Keep `origin` as the only Git remote. Temporary branches are allowed for
+  user-requested PRs; merge into `gui` and delete them afterward.
+  Do not push, pull, commit, or open
   pull requests against `merkin-agent/nup-gui`.
 
 - `tools/nup/nup/` is the Python NUP container implementation.
@@ -53,8 +55,8 @@ PYTHONPATH=tools/nup python -m unittest discover -s tools/nup/tests -v
    Never bypass apt signature checks to work around this failure.
    System packages are installed only in the Dockerfile. Do not add apt,
    Windows Python installation, or Wine initialization to lifecycle commands.
-   `.devcontainer/post-create.sh` installs the editable Python package with a
-   three-minute limit and bounded pip network retries. The Dockerfile bounds
+   `.devcontainer/post-create.sh` upgrades pip/setuptools before installing the
+   editable Python package, sharing a three-minute limit and bounded pip network retries. The Dockerfile bounds
    apt network waits and retries; a cold Wine image build still needs
    time to download and unpack packages. Wine32 and i386 are not required:
    the complete executable build and GUI smoke test pass with Wine64 alone.
@@ -109,6 +111,20 @@ PYTHONPATH=tools/nup python -m unittest discover -s tools/nup/tests -v
    CopyFile2 only while installing dependencies. It runs headlessly under
    `xvfb-run` with `WINEDLLOVERRIDES="mscoree,mshtml="`. Windows executable
    builds are explicit actions and must not run during Codespace creation.
+
+Source installs require Python 3.11+ because the patched Pillow 13 dependency
+no longer supports 3.10. Runtime dependencies are Zstandard and Pillow 13+;
+build isolation requires setuptools 84.1+. Lifecycle/build scripts upgrade pip
+to 26.2+ and setuptools to 84.1+ before installing project dependencies. Both
+Windows builds require PyInstaller 6.22.3+.
+
+The Wine build cache defaults to `${XDG_CACHE_HOME:-$HOME/.cache}/nup-windows-build`.
+`NUP_WIN_BUILD_DIR` can select a different private directory. The script refuses
+symlinks, directories writable by others, and nonempty directories without its
+`.nup-build-root` marker. Select a fresh private directory instead of adding a
+marker to an unrelated directory. Old `/tmp/nup-windows-build` runtimes can be
+left intact. Use the new cache's `python/python.exe` for Windows test/smoke runs.
+The native PowerShell build stops on pip failures before deleting build outputs.
 
 The build uses Windows Python 3.12.10 and follows PyInstaller options:
 one-file, windowed, no UPX, collect `zstandard`, bundle the GUI icon, and
@@ -170,7 +186,10 @@ warning rather than losing their package tree.
   PYTHONPATH=tools/nup xvfb-run -a python -m unittest discover -s tools/nup/tests -v
   ```
 
-  GUI tests skip without DISPLAY; a headless-only run is not full GUI validation.
+  GUI tests run on Windows without requiring DISPLAY and on Linux with DISPLAY.
+  A headless Linux run is not full GUI validation. Wine cannot create real
+  symlinks in the current environment; two symlink tests skip there and run
+  on Linux, while Windows reparse-attribute handling is tested separately.
   For Docker checks use `docker run --init` so Xvfb receives startup signals;
   running xvfb-run itself as PID 1 can wait indefinitely for readiness.
   The Windows executable can be smoke-tested under Wine with
@@ -207,3 +226,43 @@ warning rather than losing their package tree.
   to Python APIs. Windows filename restrictions still apply to selected paths.
   In release notes, use the phrase "special characters" instead of literal
   character examples, to avoid Markdown rendering problems.
+
+## Adversarial validation and consumer compatibility
+
+- See AUDIT.md and audit/ for findings, coverage, consumer revisions, and scan
+  inventories. The safety changes retain NUP v1, literal metadata IDs, raw/zstd
+  codecs, extent alignment, package identities, and game bytes.
+- CLI tree/flat extraction validates paths before writes and requires an empty
+  non-link destination. It never overwrites existing files. Windows filename
+  restrictions apply to filesystem extraction, not native NUP virtual labels.
+- Dump packing rejects links, junctions and special files, checks source bytes
+  against the hashing pass, creates outputs exclusively, and removes incomplete
+  files it owns. Source tree depth is limited to 256 levels.
+- Readers validate counts, references, region overlaps, reserved fields, tree
+  cycles and ordering before traversal. File reads and deep verification share
+  streaming hash/size checks. Zstandard windows are limited to 256 MiB, and
+  previews to JPEG/PNG decoding with 16 million pixels; neither changes stored
+  image bytes or the container format. No total extraction disk quota is imposed.
+- Preserve opaque trailing metadata bytes as permitted by SPEC section 5.
+  Metadata edits use unique sibling files and validate application metadata
+  before replacement. Detect concurrent replacements/changes; compare ctime
+  only on POSIX because Windows/Wine stat/fstat disagree about its meaning.
+- Missing imported application fields preserve target values. Unedited source
+  TLVs retain literal bytes, including whitespace. Target selection must retain
+  existing manual edits; long preview labels are bounded without truncating fields.
+- Optional interoperability checks require supplied consumer source checkouts,
+  a C/C++ compiler with OpenSSL/Zstandard headers, a JDK, and Python with Pillow,
+  zstandard, capstone, lz4 and compression.zstd (or backports.zstd):
+
+  ```sh
+  PYTHONPATH=tools/nup python tools/nup/check_consumers.py \
+    --banana-root /path/to/BananaNative --fritchii-root /path/to/Fritchii \
+    --report /tmp/nup-consumer-results.json
+  ```
+
+  This runs actual consumer reader/preparation checks with synthetic data and
+  minimal host adapters, not a game boot or a full emulator/APK build. An optional
+  `--baseline-root` accepts a pre-audit tools/nup checkout for binary comparisons.
+- CI builds/tests `gui`, PRs targeting `gui`, and release tags on native Windows.
+  Actions are pinned to official release commits; the token has contents-read permission,
+  checkout does not persist credentials, and the uploaded artifact is the GUI ZIP.

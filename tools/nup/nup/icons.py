@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 
+from .sourceio import open_source
+from .format import NupError
+
 
 _ICON_NAMES = ("icon.png", "icon.jpg", "icon.jpeg", "icon.dat",
                "cover.jpg", "cover.png", "boxart.png", "boxart.jpg")
@@ -27,9 +30,9 @@ def image_extension(data: bytes) -> str | None:
 
 def is_supported_image(path: str) -> bool:
     try:
-        with open(path, "rb") as stream:
+        with open_source(path) as stream:
             return image_extension(stream.read(8)) is not None
-    except OSError:
+    except (OSError, NupError):
         return False
 
 
@@ -45,7 +48,7 @@ def detect_icon(source: str, package_dirs: list[str]) -> str | None:
                 name for name in os.listdir(directory)
                 if is_icon_filename(name)
             )
-        except OSError:
+        except (OSError, NupError):
             localized = []
         candidates.extend(os.path.join(directory, name) for name in localized)
 

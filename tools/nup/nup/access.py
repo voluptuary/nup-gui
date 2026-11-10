@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import stat
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -123,6 +124,52 @@ def resolve_path(r: NupReader, pkg: PackageInfo, relpath: str) -> NodeRef | None
     return cur
 
 
+def _empty_destination(dest: str) -> None:
+    if os.path.lexists(dest):
+        info = os.lstat(dest)
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise F.NupError("extraction destination cannot be a link or junction")
+    os.makedirs(dest, exist_ok=True)
+    if os.listdir(dest):
+        raise F.NupError("extraction destination must be empty")
+
+
+def _validate_extract_tree(r: NupReader, root: int, cancel=None) -> None:
+    stack = [root]
+    visited = set()
+    while stack:
+        if cancel is not None and cancel():
+            raise OperationCancelled("operation cancelled")
+        current = stack.pop()
+        if current in visited:
+            raise F.NupError("directory tree contains a cycle or alias")
+        visited.add(current)
+        names = set()
+        for child in iter_children(r, current):
+            name = child.name.decode("utf-8", "surrogateescape")
+            if not _valid_windows_component(name):
+                raise F.NupError(f"unsafe or Windows-incompatible path component {child.name!r}")
+            if name.casefold() in names:
+                raise F.NupError("case-insensitive extraction path collision")
+            names.add(name.casefold())
+            if child.is_dir:
+                stack.append(child.index)
+
+
+def extract_flat(r: NupReader, dest: str) -> int:
+    names = []
+    for index, record in enumerate(r.files):
+        name = record[0].decode("utf-8", "surrogateescape")
+        if not _valid_windows_component(name) or not _valid_windows_component(f"{index:05d}_{name}"):
+            raise F.NupError(f"unsafe flat extraction name {record[0]!r}")
+        names.append(f"{index:05d}_{name}")
+    _empty_destination(dest)
+    for index, name in enumerate(names):
+        with open(os.path.join(dest, name), "xb") as output:
+            r.copy_file(index, output)
+    return len(names)
+
+
 def extract_tree(
     r: NupReader,
     dest: str,
@@ -131,8 +178,9 @@ def extract_tree(
     cancel: Callable[[], bool] | None = None,
 ) -> int:
     """Extract a directory subtree to dest. Returns number of files written."""
+    _validate_extract_tree(r, dir_index, cancel)
+    _empty_destination(dest)
     n = 0
-    os.makedirs(dest, exist_ok=True)
     stack = [(dir_index, dest)]
     while stack:
         di, dpath = stack.pop()
@@ -144,7 +192,7 @@ def extract_tree(
             if child.is_dir:
                 stack.append((child.index, cpath))
             else:
-                with open(cpath, "wb") as fh:
+                with open(cpath, "xb") as fh:
                     r.copy_file(child.index, fh, cancel)
                 n += 1
                 if progress:
@@ -227,11 +275,13 @@ def extract_dump(
                 valid = valid and candidate == "base"
             elif pkg.kind == F.KIND_UPDATE:
                 valid = (valid and len(parts) == 2 and parts[0] == "updates"
-                         and parts[1].isdigit() and int(parts[1]) == pkg.version)
+                         and re.fullmatch(r"[0-9]{1,10}", parts[1]) is not None
+                         and int(parts[1]) == pkg.version)
             else:
                 valid = (valid and len(parts) == 3 and parts[0] == "dlc"
                          and re.fullmatch(r"[0-9a-fA-F]{16}", parts[1]) is not None
-                         and int(parts[1], 16) == pkg.title_id and parts[2].isdigit())
+                         and int(parts[1], 16) == pkg.title_id
+                         and re.fullmatch(r"[0-9]{1,10}", parts[2]) is not None)
             if valid:
                 relpath = os.path.join(*parts)
         targets.append((pkg, relpath))
@@ -331,9 +381,11 @@ def extract_dump(
 
 def _valid_windows_component(name: str) -> bool:
     return bool(
-        name and name not in (".", "..") and len(name) <= 255
+        name and name not in (".", "..")
+        and sum(2 if ord(c) > 0xFFFF else 1 for c in name) <= 255
         and name[-1] not in (".", " ")
         and not any(ord(c) < 32 or 0xD800 <= ord(c) <= 0xDFFF
                     or c in '<>:"/\\|?*' for c in name)
-        and re.fullmatch(r"(?i:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", name) is None
+        and re.fullmatch(r"(?i:con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])",
+                        name.partition(".")[0].rstrip(" ")) is None
     )
