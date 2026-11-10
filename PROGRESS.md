@@ -2,6 +2,30 @@
 
 This document records meaningful changes and enhancements made to `nup-gui` and its tooling.
 
+## 0.3.1 GUI test build (2026-11-10)
+
+- Moved existing metadata editing to the third radio option in the main window,
+  retaining editor state when switching modes. Made editor buttons uniform and
+  placed Transfer metadata on the right. Corrected a Windows-theme width mismatch
+  found by the new GUI layout test.
+- Added target-transfer confirmation with source/target paths, changed text/icon
+  fields, localized/NACP changes, and preservation context. Cancelling leaves
+  both source and target bytes unchanged; source-update confirmation remains.
+- Added append-only UTF-8 error.log diagnostics for import/read failures, worker
+  errors, validation errors, and unhandled Tk callbacks, including tracebacks.
+  Dialogs show the log location; unwritable application directories fall back
+  to user storage. Logs are ignored by Git.
+- Verified metadata with :, &, $, accented text and Japanese through imports,
+  reads, transfers, source updates, and dump round trips. Tested supported
+  filenames with &, $, and Unicode; these tests found no character-escaping bug.
+  Existing reported errors still need a real error.log to identify their cause.
+- Retained --noupx in both build scripts. Enabled level-9 internal archive
+  compression and excluded unused Pillow AVIF/WebP plugins and native codecs.
+  The executable decreased from 16,186,850 to 11,627,244 bytes (28.2%).
+- Validation: 23 tests passed on Linux/Xvfb and Windows Python 3.12.10/Wine64;
+  the rebuilt executable passed the Windows-message-loop smoke test. ZIP
+  integrity passed; it contains only nup-gui.exe. Rebuilt tracked release files.
+
 ## Devcontainer restoration and repository isolation (2026-11-10)
 
 - Moved `bad-devcontainer/` back to `.devcontainer/`, retaining the bounded

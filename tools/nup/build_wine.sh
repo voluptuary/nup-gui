@@ -105,9 +105,13 @@ trap - EXIT
 mkdir -p "$work_dir"
 rm -f "$dist_dir/nup-gui.exe" "$dist_dir/nup-gui-windows-x64.zip"
 
+# Compress embedded archives at the highest zlib level; keep UPX disabled.
+export PYINSTALLER_ZLIB_COMPRESSION_LEVEL=9
 "$wine_bin" "$python_win" -m PyInstaller \
   --noconfirm --clean --onefile --windowed --noupx \
   --name nup-gui --paths "$root_win\\tools\\nup" --collect-all zstandard \
+  --exclude-module PIL.AvifImagePlugin --exclude-module PIL._avif \
+  --exclude-module PIL.WebPImagePlugin --exclude-module PIL._webp \
   --exclude-module _hashlib --exclude-module _ssl --exclude-module ssl --exclude-module _wmi \
   --icon "$icon_win" --add-data "${icon_win};assets" \
   --distpath "$dist_win" --workpath "$work_win\\gui" --specpath "$work_win\\gui" \

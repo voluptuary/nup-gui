@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import tempfile
 import queue
 import sys
@@ -30,9 +31,35 @@ def resource_path(relative_path: Path) -> Path:
     return Path(__file__).resolve().parent / "launcher" / relative_path
 
 
+def configure_error_log(folder: Path | None = None) -> tuple[logging.Logger, Path]:
+    """Append UTF-8 diagnostics beside the executable, falling back to user storage."""
+    folder = folder or (Path(sys.executable).parent if getattr(sys, "frozen", False) else Path.cwd())
+    candidates = [folder / "error.log",
+                  Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "state")) / "NUP Packager" / "error.log"]
+    for path in candidates:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handler = logging.FileHandler(path, mode="a", encoding="utf-8")
+        except OSError:
+            continue
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(threadName)s] %(message)s"))
+        logger = logging.getLogger(f"nup.gui.{path}")
+        for previous in logger.handlers[:]:
+            previous.close()
+            logger.removeHandler(previous)
+        logger.addHandler(handler)
+        logger.setLevel(logging.ERROR)
+        logger.propagate = False
+        return logger, path
+    raise OSError("Cannot create error.log beside the application or in user storage")
+
+
 class NupPackagerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        self.error_logger, self.error_log_path = configure_error_log()
+        root.report_callback_exception = self.report_callback_exception
+        self.editor_frame = None
         self.events: queue.Queue[tuple[str, str, str, str]] = queue.Queue()
         self.busy = False
         self.metadata_files = tempfile.TemporaryDirectory(prefix="nup-metadata-")
@@ -58,13 +85,15 @@ class NupPackagerApp:
         except tk.TclError:
             pass
 
+        self.mode_frame = ttk.Frame(root)
+        self.mode_frame.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.pack_radio = ttk.Radiobutton(
-            root, text="Pack .nup", variable=self.mode, value="pack",
+            self.mode_frame, text="Pack .nup", variable=self.mode, value="pack",
             command=self.update_mode,
         )
         self.pack_radio.grid(row=0, column=0, sticky="w", padx=8, pady=(10, 4))
         self.unpack_radio = ttk.Radiobutton(
-            root, text="Unpack .nup", variable=self.mode, value="unpack",
+            self.mode_frame, text="Unpack .nup", variable=self.mode, value="unpack",
             command=self.update_mode,
         )
         self.unpack_radio.grid(row=0, column=1, sticky="w", padx=8, pady=(10, 4))
@@ -84,8 +113,10 @@ class NupPackagerApp:
         self.import_dump_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
         self.import_nup_button = ttk.Button(self.buttons_frame, text="Import from .nup", command=self.import_from_nup)
         self.import_nup_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(8, 0))
-        self.copy_nup_button = ttk.Button(self.buttons_frame, text="Edit existing .nup metadata", command=self.copy_metadata_nup_to_nup)
-        self.copy_nup_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(8, 0))
+        self.copy_nup_button = ttk.Radiobutton(
+            self.mode_frame, text="Edit existing metadata", variable=self.mode, value="metadata",
+            command=self.update_mode)
+        self.copy_nup_button.grid(row=0, column=2, sticky="w", padx=8, pady=(10, 4))
 
         self.title_label = ttk.Label(root, text="Game title (optional)")
         self.title_label.grid(row=3, column=0, sticky="w", padx=8, pady=8)
@@ -138,8 +169,18 @@ class NupPackagerApp:
 
         self.icon_image_ref = None
         self.icon.trace_add("write", lambda *_: self.update_icon_preview())
+        self.main_widgets = [widget for widget in root.winfo_children()
+                             if widget.winfo_manager() == "grid" and int(widget.grid_info()["row"]) > 0]
         self.update_mode()
         self.poll_after_id = self.root.after(100, self.drain_events)
+
+    def show_error(self, title: str, message: str, **options) -> None:
+        self.error_logger.error("%s: %s", title, message, exc_info=sys.exc_info()[0] is not None)
+        messagebox.showerror(title, f"{message}\n\nError log: {self.error_log_path}", **options)
+
+    def report_callback_exception(self, kind, value, tb) -> None:
+        self.error_logger.error("Unhandled GUI callback", exc_info=(kind, value, tb))
+        self.show_error("Unexpected error", f"{kind.__name__}: {value}", parent=self.root)
 
     def bind_entry(self, entry: ttk.Entry) -> ttk.Entry:
         menu = tk.Menu(self.root, tearoff=0)
@@ -190,8 +231,18 @@ class NupPackagerApp:
         self.icon.set(icon_path)
 
     def update_mode(self) -> None:
+        if self.mode.get() == "metadata":
+            for widget in self.main_widgets:
+                widget.grid_remove()
+            self.copy_metadata_nup_to_nup()
+            self.root.geometry("900x510")
+            return
+        if self.editor_frame is not None:
+            self.editor_frame.grid_remove()
+        for widget in self.main_widgets:
+            widget.grid()
         if self.mode.get() == "pack":
-            for widget in (self.buttons_frame,
+            for widget in (self.metadata_source_label, self.buttons_frame,
                            self.icon_preview_label,
                            self.icon_label, self.icon_entry, self.icon_button,
                            self.title_label, self.title_entry,
@@ -214,7 +265,7 @@ class NupPackagerApp:
             self.action_button.configure(text="Create NUP")
             self.status.set("Choose a dump folder to package.")
         else:
-            for widget in (self.buttons_frame,
+            for widget in (self.metadata_source_label, self.buttons_frame,
                            self.icon_preview_label,
                            self.icon_label, self.icon_entry, self.icon_button,
                            self.title_label, self.title_entry,
@@ -255,7 +306,7 @@ class NupPackagerApp:
             self.status.set(f"Imported {', '.join(fields)} from {path.name}. Review before creating a package."
                             if fields else f"No application metadata found in {path.name}.")
         except Exception as exc:
-            messagebox.showerror("Import Failed", f"Could not import metadata from {path.name}:\n{exc}", parent=self.root)
+            self.show_error("Import Failed", f"Could not import metadata from {path.name}:\n{exc}", parent=self.root)
 
     def import_from_dump(self) -> None:
         selected_dir = filedialog.askdirectory(
@@ -267,14 +318,17 @@ class NupPackagerApp:
             self.auto_populate_metadata(Path(selected_dir))
 
     def copy_metadata_nup_to_nup(self) -> None:
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Edit existing .nup metadata")
-        dlg.geometry("800x470")
-        dlg.minsize(740, 430)
-        dlg.transient(self.root)
-        dlg.grab_set()
+        if self.mode.get() != "metadata":
+            self.mode.set("metadata")
+            self.update_mode()
+            return
+        if self.editor_frame is not None:
+            self.editor_frame.grid()
+            return
+        dlg = self.editor_frame = ttk.Frame(self.root)
+        dlg.grid(row=1, column=0, columnspan=3, sticky="nsew")
         dlg.columnconfigure(1, weight=1)
-        dlg.columnconfigure(2, minsize=112)
+        dlg.columnconfigure(2, weight=0)
 
         src_var = tk.StringVar()
         dst_var = tk.StringVar()
@@ -328,7 +382,7 @@ class NupPackagerApp:
                            ("All files", "*.*")))
             if selected:
                 if not is_supported_image(selected):
-                    messagebox.showerror("Invalid Format", "Choose a valid JPEG or PNG image.", parent=dlg)
+                    self.show_error("Invalid Format", "Choose a valid JPEG or PNG image.", parent=dlg)
                     return
                 icon_var.set(selected)
 
@@ -368,33 +422,33 @@ class NupPackagerApp:
             try:
                 show_dialog_metadata(load_application(selected))
             except Exception as exc:
+                self.error_logger.exception("Reading metadata from %s", selected)
                 status_v.set(f"Could not load metadata: {exc}")
 
         src_var.trace_add("write", refresh_fields)
         dst_var.trace_add("write", refresh_fields)
 
         copying = False
-        dlg.protocol("WM_DELETE_WINDOW", lambda: None if copying else dlg.destroy())
         edit_fields = (src_entry, dst_entry, title_entry, version_entry,
                        publisher_entry, icon_entry)
         actions_frame = ttk.Frame(dlg)
         actions_frame.grid(row=8, column=0, columnspan=3, sticky="e", padx=10, pady=10)
         update_source_button = ttk.Button(actions_frame, text="Update source")
         edit_button = ttk.Button(actions_frame, text="Transfer metadata")
-        update_source_button.pack(side=tk.RIGHT)
-        edit_button.pack(side=tk.RIGHT, padx=(0, 8))
+        edit_button.pack(side=tk.RIGHT)
+        update_source_button.pack(side=tk.RIGHT, padx=(0, 8))
 
         def execute_source_update() -> None:
             nonlocal copying
             source_path = src_var.get().strip()
             if not source_path or not os.path.isfile(source_path):
-                messagebox.showerror(
+                self.show_error(
                     "Source Required", "Choose a valid source .nup file to update.", parent=dlg)
                 return
             try:
                 before = load_application(source_path)
             except Exception as exc:
-                messagebox.showerror(
+                self.show_error(
                     "Source Read Failed", f"Could not read source metadata:\n{exc}", parent=dlg)
                 return
 
@@ -418,10 +472,10 @@ class NupPackagerApp:
                                  clear_publisher=not bool(publisher))
 
             if icon_path and not os.path.isfile(icon_path):
-                messagebox.showerror("Icon Not Found", "The selected icon file does not exist.", parent=dlg)
+                self.show_error("Icon Not Found", "The selected icon file does not exist.", parent=dlg)
                 return
             if icon_path and not is_supported_image(icon_path):
-                messagebox.showerror("Invalid Format", "Choose a valid JPEG or PNG image.", parent=dlg)
+                self.show_error("Invalid Format", "Choose a valid JPEG or PNG image.", parent=dlg)
                 return
             icon_bytes = Path(icon_path).read_bytes() if icon_path else b""
             if icon_bytes != before.icon:
@@ -454,7 +508,7 @@ class NupPackagerApp:
             copying = True
             self.busy = True
             self._set_controls_enabled(False)
-            for widget in (*edit_fields, update_source_button, edit_button):
+            for widget in (*edit_fields, *self.editor_buttons):
                 widget.configure(state="disabled")
             status_v.set("Updating source metadata and verifying the package…")
             results = queue.Queue()
@@ -466,6 +520,7 @@ class NupPackagerApp:
                     metadata = load_application(source_path)
                     results.put((metadata, None))
                 except Exception as exc:
+                    self.error_logger.exception("Metadata operation: source=%s", source_path)
                     results.put((None, exc))
 
             def completed_source_update() -> None:
@@ -478,11 +533,11 @@ class NupPackagerApp:
                 copying = False
                 self.busy = False
                 self._set_controls_enabled(True)
-                for widget in (*edit_fields, update_source_button, edit_button):
+                for widget in (*edit_fields, *self.editor_buttons):
                     widget.configure(state="normal")
                 if error:
                     status_v.set("Source update failed. Review the error before retrying.")
-                    messagebox.showerror("Source Update Failed", str(error), parent=dlg)
+                    self.show_error("Source Update Failed", str(error), parent=dlg)
                 else:
                     show_dialog_metadata(metadata)
                     self.show_metadata(metadata)
@@ -499,24 +554,59 @@ class NupPackagerApp:
             source_path = src_var.get().strip()
             target_path = dst_var.get().strip()
             if not target_path or not os.path.isfile(target_path):
-                messagebox.showerror("Error", "Please select a valid target .nup file.", parent=dlg)
+                self.show_error("Error", "Please select a valid target .nup file.", parent=dlg)
                 return
             if source_path and (not os.path.isfile(source_path) or
                                 Path(source_path).resolve() == Path(target_path).resolve()):
-                messagebox.showerror("Error", "Choose a valid, different source .nup file.", parent=dlg)
+                self.show_error("Error", "Choose a valid, different source .nup file.", parent=dlg)
                 return
             if icon_var.get() and not is_supported_image(icon_var.get()):
-                messagebox.showerror("Invalid Format", "Choose a valid JPEG or PNG image.", parent=dlg)
+                self.show_error("Invalid Format", "Choose a valid JPEG or PNG image.", parent=dlg)
+                return
+            values = (title_var.get().strip(), version_var.get().strip(),
+                      publisher_var.get().strip(), icon_var.get().strip())
+            try:
+                before = load_application(target_path)
+                source_metadata = load_application(source_path) if source_path else None
+                if source_metadata is not None and not source_metadata.records:
+                    raise ValueError("The source has no valid application metadata to copy.")
+                icon_bytes = Path(values[3]).read_bytes() if values[3] else b""
+            except Exception as exc:
+                self.show_error("Transfer Read Failed", f"Could not prepare metadata transfer:\n{exc}", parent=dlg)
+                return
+            changes = []
+            for label, old, new in (("Title", before.title, values[0]),
+                                    ("Display version", before.version, values[1]),
+                                    ("Publisher", before.publisher, values[2])):
+                if old != new:
+                    changes.append(f"{label}: {old or '(empty)'} → {new or '(empty)'}")
+            if before.icon != icon_bytes:
+                changes.append(f"Icon: {len(before.icon):,} bytes → {len(icon_bytes):,} bytes"
+                               + (" (remove icon)" if not icon_bytes else ""))
+            if source_metadata is not None:
+                from nup import format as F
+                for kind, label in ((F.TLV_NACP, "NACP application metadata"),
+                                    (F.TLV_LOCALIZED_TITLES, "Complete localized titles"),
+                                    (F.TLV_LOCALIZED_ICONS, "Complete localized icons")):
+                    if kind in source_metadata.records and source_metadata.records[kind] != before.records.get(kind):
+                        changes.append(f"{label}: replace from source")
+            summary = (f"Source: {source_path or 'edited fields (no source package)'}\n"
+                       f"Target to modify: {target_path}\n\n"
+                       + ("\n".join(changes) if changes else "Selected application metadata matches the target.")
+                       + "\n\nEmpty editable fields clear their corresponding target fields. "
+                         "Package contents and unrelated metadata will be preserved. "
+                         "The source package will remain unchanged.\n\nContinue?")
+            if not messagebox.askyesno("Confirm metadata transfer" if source_path else "Confirm target update",
+                                       summary, parent=dlg):
                 return
             copying = True
             self.busy = True
             self._set_controls_enabled(False)
-            for widget in (*edit_fields, update_source_button, edit_button):
+            for widget in (*edit_fields, *self.editor_buttons):
                 widget.configure(state="disabled")
             status_v.set("Editing metadata and verifying the target package…")
             results = queue.Queue()
-            values = (title_var.get().strip(), version_var.get().strip(),
-                      publisher_var.get().strip(), icon_var.get().strip())
+
 
             def work() -> None:
                 try:
@@ -536,6 +626,7 @@ class NupPackagerApp:
                         metadata = load_application(target_path)
                     results.put((metadata, None))
                 except Exception as exc:
+                    self.error_logger.exception("Metadata operation: source=%s", source_path)
                     results.put((None, exc))
 
             def completed() -> None:
@@ -548,22 +639,34 @@ class NupPackagerApp:
                 copying = False
                 self.busy = False
                 self._set_controls_enabled(True)
-                for widget in (*edit_fields, update_source_button, edit_button):
+                for widget in (*edit_fields, *self.editor_buttons):
                     widget.configure(state="normal")
                 if error:
                     status_v.set("Edit failed. Review the error before retrying.")
-                    messagebox.showerror("Edit Failed", str(error), parent=dlg)
+                    self.show_error("Edit Failed", str(error), parent=dlg)
                 else:
                     self.show_metadata(metadata)
                     self.status.set(f"Edited and verified metadata in {Path(target_path).name}.")
                     messagebox.showinfo("Success", f"Metadata edited successfully in:\n{target_path}", parent=dlg)
-                    dlg.destroy()
+                    status_v.set(f"Edited and verified metadata in {Path(target_path).name}.")
 
             threading.Thread(target=work, daemon=True).start()
             dlg.after(100, completed)
 
         update_source_button.configure(command=execute_source_update)
         edit_button.configure(command=execute_edit)
+        # Use the same requested width and height for every editor button.
+        self.editor_buttons = [widget for widget in dlg.winfo_children()
+                               if isinstance(widget, ttk.Button)] + [update_source_button, edit_button]
+        for button in self.editor_buttons:
+            button.configure(width=20)
+        self.editor_source = src_var
+        self.editor_target = dst_var
+        self.editor_title = title_var
+        self.editor_version = version_var
+        self.editor_publisher = publisher_var
+        self.editor_transfer_button = edit_button
+        self.editor_update_button = update_source_button
 
     def browse_icon(self) -> None:
         selected = filedialog.askopenfilename(
@@ -574,7 +677,7 @@ class NupPackagerApp:
         )
         if selected:
             if not is_supported_image(selected):
-                messagebox.showerror(
+                self.show_error(
                     "Invalid Format",
                     "The selected file is not a supported JPEG or PNG image format (missing valid magic bytes).",
                     parent=self.root,
@@ -590,6 +693,7 @@ class NupPackagerApp:
             self.show_metadata(metadata)
             self.status.set("Dump metadata loaded. Review or replace any item; empty fields are optional.")
         except (Exception, SystemExit) as exc:
+            self.error_logger.exception("Scanning dump metadata: %s", source_path)
             self.status.set(f"Metadata scan failed: {exc}")
 
     def browse_source(self) -> None:
@@ -648,29 +752,29 @@ class NupPackagerApp:
         source_text = self.source.get().strip()
         output_text = self.output.get().strip()
         if not source_text:
-            messagebox.showerror("NUP Packager", "Choose an input first.", parent=self.root)
+            self.show_error("NUP Packager", "Choose an input first.", parent=self.root)
             return
         if not output_text:
-            messagebox.showerror("NUP Packager", "Choose an output location.", parent=self.root)
+            self.show_error("NUP Packager", "Choose an output location.", parent=self.root)
             return
         source, output = Path(source_text), Path(output_text)
         mode = self.mode.get()
         if mode == "pack":
             if not source.is_dir():
-                messagebox.showerror("NUP Packager", "Choose an existing dump folder.", parent=self.root)
+                self.show_error("NUP Packager", "Choose an existing dump folder.", parent=self.root)
                 return
             if output.exists():
-                messagebox.showerror(
+                self.show_error(
                     "NUP Packager", "Choose a new output filename. Existing files are not overwritten.",
                     parent=self.root,
                 )
                 return
         else:
             if not source.is_file():
-                messagebox.showerror("NUP Packager", "Choose an existing .nup file.", parent=self.root)
+                self.show_error("NUP Packager", "Choose an existing .nup file.", parent=self.root)
                 return
             if output.exists():
-                messagebox.showerror(
+                self.show_error(
                     "NUP Packager", "Choose a new output folder. Existing folders are not overwritten.",
                     parent=self.root,
                 )
@@ -743,6 +847,7 @@ class NupPackagerApp:
         except OperationCancelled:
             self.events.put(("cancelled", "", "", str(output)))
         except (Exception, SystemExit) as exc:
+            self.error_logger.exception("NUP operation: source=%s output=%s", source, output)
             self.events.put(("error", "", "", f"{type(exc).__name__}: {exc}"))
         else:
             self.events.put(("done", "", "", str(output)))
@@ -772,7 +877,7 @@ class NupPackagerApp:
                 elif kind == "error":
                     self.finish_operation()
                     self.status.set("Operation failed.")
-                    messagebox.showerror("NUP operation failed", detail, parent=self.root)
+                    self.show_error("NUP operation failed", detail, parent=self.root)
                 elif kind == "cancelled":
                     self.finish_operation()
                     self.status.set("Cancelled. Temporary output removed; original files are unchanged.")
@@ -816,6 +921,9 @@ class NupPackagerApp:
             self.root.after_cancel(self.poll_after_id)
             self.poll_after_id = None
         self.metadata_files.cleanup()
+        for handler in self.error_logger.handlers[:]:
+            handler.close()
+            self.error_logger.removeHandler(handler)
         self.root.destroy()
 
 

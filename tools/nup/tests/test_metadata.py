@@ -189,3 +189,17 @@ class MetadataTests(unittest.TestCase):
         for payload in (b"\x00", b"\x05en", b"\x02en\x10\0\0\0x"):
             with self.subTest(payload=payload), self.assertRaises(F.NupError):
                 decode_localized(payload)
+
+    def test_special_characters_survive_read_copy_edit_and_dump_import(self):
+        value = "Title: & $ café 日本語 'quoted' \\ path"
+        source = self.package("source & $ café.nup")
+        target = self.package("target & $ café.nup")
+        replace_metadata(source, [serialize_block({5: value.encode(), 6: value.encode(), 4: b"v1: & $"})])
+        copied = copy_application(str(source), str(target))
+        self.assertEqual((copied.title, copied.publisher, copied.version), (value, value, "v1: & $"))
+        dump = self.work / "dump & $ café"
+        with NupReader(str(target)) as reader:
+            extract_dump(reader, str(dump))
+        self.assertEqual(dump_application(dump, []).title, value)
+        edit(str(target), name=value + " updated", publisher=value)
+        self.assertEqual(load_application(target).title, value + " updated")

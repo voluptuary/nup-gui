@@ -7,3 +7,6 @@ tools/nup/build-win/
 tools/nup/build/
 tools/nup/launcher/nup.exe
 ATHOME.md
+
+# Local GUI diagnostics may contain package paths and metadata.
+error.log

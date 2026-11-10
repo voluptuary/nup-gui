@@ -20,8 +20,9 @@ before building and revise them whenever they learn a recovery step that is not 
   Windows Python and PyInstaller under Wine.
 - `.devcontainer/` defines the Codespace Python and Wine build environment.
 - `dist/nup-gui.exe` and `dist/nup-gui-windows-x64.zip` are generated build
-  outputs and are ignored by Git. Rebuild them when needed; do not assume they
-  survive a Codespace deletion.
+  outputs. The dist directory is ignored for new files, but these two release
+  artifacts are currently tracked; rebuilding modifies them. Rebuild them when
+  needed; do not assume uncommitted builds survive a Codespace deletion.
 
 Python packaging files live in `tools/nup/`. Run the test suite from the repo
 root with:
@@ -111,7 +112,10 @@ PYTHONPATH=tools/nup python -m unittest discover -s tools/nup/tests -v
 
 The build uses Windows Python 3.12.10 and follows PyInstaller options:
 one-file, windowed, no UPX, collect `zstandard`, bundle the GUI icon, and
-exclude unused SSL and WMI modules.
+exclude unused SSL and WMI modules. Set
+`PYINSTALLER_ZLIB_COMPRESSION_LEVEL=9` for maximum internal archive compression.
+Exclude Pillow AVIF and WebP plugins/native codecs: GUI artwork accepts JPEG
+and PNG (including those stored as .dat). Keep JPEG/PNG preview tests passing.
 
 ## Build outputs and checks
 
@@ -164,4 +168,20 @@ warning rather than losing their package tree.
   running xvfb-run itself as PID 1 can wait indefinitely for readiness.
   The Windows executable can be smoke-tested under Wine with
   `tools/nup/smoke_gui.py` using the installed Windows Python. Build artifacts
-  remain ignored by Git and must be downloaded separately from the workspace.
+  are currently tracked release files; rebuilt workspace copies must be downloaded
+  separately unless published.
+
+## GUI metadata editor and diagnostics
+
+- Metadata editing is the third radio mode in the main window; keep it inline
+  and retain source/target fields and edits when switching modes. Transfer is
+  the rightmost action; all editor buttons use the same width. Both source
+  updates and target transfers require a contextual confirmation showing paths
+  and changes before writing; cancelling must leave both packages unchanged.
+- The GUI appends UTF-8 diagnostics and exception tracebacks to `error.log`
+  beside the frozen executable (working directory when running from source).
+  If that location is unwritable, use `%LOCALAPPDATA%/NUP Packager/error.log`
+  on Windows or `~/.local/state/NUP Packager/error.log` otherwise. Error dialogs
+  show the selected log path. Preserve existing log entries; logs are ignored.
+- Special characters such as `:`, `&`, and `$` are metadata text, passed directly
+  to Python APIs. Windows filename restrictions still apply to selected paths.

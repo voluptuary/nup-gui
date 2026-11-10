@@ -18,6 +18,8 @@ foreach ($name in @('nup-gui.exe', 'nup-gui-windows-x64.zip')) {
 }
 
 # NUP only uses SHA-256; Python's built-in SHA implementation replaces OpenSSL.
+# Maximum internal archive compression; UPX remains disabled.
+$env:PYINSTALLER_ZLIB_COMPRESSION_LEVEL = '9'
 python -m PyInstaller `
   --noconfirm `
   --clean `
@@ -27,6 +29,10 @@ python -m PyInstaller `
   --name nup-gui `
   --paths (Join-Path $projectDir '.') `
   --collect-all zstandard `
+  --exclude-module PIL.AvifImagePlugin `
+  --exclude-module PIL._avif `
+  --exclude-module PIL.WebPImagePlugin `
+  --exclude-module PIL._webp `
   --exclude-module _hashlib `
   --exclude-module _ssl `
   --exclude-module ssl `
