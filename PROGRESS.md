@@ -87,3 +87,13 @@ This document records meaningful changes and enhancements made to `nup-gui` and 
   regression tests, and build fixes needed to reproduce the validated result.
 - Application and build code are unchanged from the version validated with
   19 tests on Linux/Xvfb and Windows Python/Wine and the executable smoke test.
+
+
+## Metadata edit dialog layout update (2026-11-10)
+
+- Labeled the metadata source row and aligned its first import button with the
+  metadata entry fields. Renamed the third action to “Edit existing .nup metadata”.
+- Kept the source and target pickers at the top of that dialog and added the
+  editable title, version, publisher, and icon fields beneath them. The bottom
+  action now reads “Edit metadata” and applies those values to the selected target
+  in one atomic edit.

@@ -84,7 +84,11 @@ def load_application(path: str | Path) -> ApplicationMetadata:
         return read_application(reader)
 
 
-def copy_application(source: str, target: str) -> ApplicationMetadata:
+def copy_application(source: str, target: str, *, name: str | None = None,
+                     publisher: str | None = None, display_version: str | None = None,
+                     icon: str | None = None, clear_name: bool = False,
+                     clear_publisher: bool = False, clear_display_version: bool = False,
+                     clear_icon: bool = False) -> ApplicationMetadata:
     from .edit import edit
     if Path(source).resolve() == Path(target).resolve():
         raise ValueError("Choose different source and target packages.")
@@ -93,11 +97,31 @@ def copy_application(source: str, target: str) -> ApplicationMetadata:
         raise ValueError("The source has no valid application metadata to copy.")
     # Preserve localized sets and absent target fields; never copy NPDM, build
     # IDs, or provenance from an unrelated game. edit uses atomic replacement.
-    edit(target, app_records=metadata.records)
+    target_before = load_application(target)
+    edit(target, app_records=metadata.records, name=name, publisher=publisher,
+         display_version=display_version, icon=icon, clear_name=clear_name,
+         clear_publisher=clear_publisher, clear_display_version=clear_display_version,
+         clear_icon=clear_icon)
+    expected_records = dict(target_before.records)
+    expected_records.update(metadata.records)
+    for kind, value, clear in (
+        (F.TLV_TITLE_NAME, name, clear_name),
+        (F.TLV_PUBLISHER, publisher, clear_publisher),
+        (F.TLV_DISPLAY_VERSION, display_version, clear_display_version),
+    ):
+        if clear:
+            expected_records.pop(kind, None)
+        elif value is not None:
+            expected_records[kind] = value.encode("utf-8")
+    if clear_icon:
+        expected_records.pop(F.TLV_ICON, None)
+    elif icon is not None:
+        expected_records[F.TLV_ICON] = Path(icon).read_bytes()
+    expected = from_records(expected_records)
     actual = load_application(target)
-    if any(actual.records.get(t) != data for t, data in metadata.records.items()):
-        raise F.NupError("Target metadata verification failed after copying")
-    return metadata
+    if actual.records != expected.records:
+        raise F.NupError("Target metadata verification failed after editing")
+    return actual
 
 
 def nacp_metadata(data: bytes) -> ApplicationMetadata:
