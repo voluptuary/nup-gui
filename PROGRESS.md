@@ -89,3 +89,30 @@ This document records meaningful changes and enhancements made to `nup-gui` and 
 
 8. **Non-Interactive Wine Build Pipeline (`build_wine.sh`)**
    - **Technical Explanation**: Configured `build_wine.sh` to run headlessly under `xvfb-run` with `WINEDLLOVERRIDES="mscoree,mshtml="` to suppress Wine GUI/debugger popups. Applied Python 3.12 `shutil.py` `CopyFile2` bypass for Wine 9 compatibility, enabling reliable, fully non-interactive compilation of `dist/nup-gui.exe` and `dist/nup-gui-windows-x64.zip`.
+
+## Final validation and publication (2026-11-10)
+
+- Final restored devcontainer image built successfully. Its post-create script
+  completed as vscode; NUP CLI, Python imports, Wine, Xvfb, and msiextract were
+  checked. The obsolete bad-.devcontainer directory was removed as requested.
+- All 19 tests passed on Linux/Xvfb and Windows Python 3.12.10 under Wine,
+  including metadata field types, JPEG/PNG previews, asynchronous copying,
+  compressed NACP language data, edited values through packing, unknown and
+  duplicate TLVs, file bytes, and nonzero package identities through round trips.
+  No tracebacks or Tk callback errors remained in the final test logs.
+- Built dist/nup-gui.exe and dist/nup-gui-windows-x64.zip. The executable is
+  Windows x64; the final smoke test opened it, checked Windows message handling,
+  and closed it cleanly. ZIP integrity passed and its sole entry is nup-gui.exe.
+  These generated artifacts remain ignored by Git and available in the workspace.
+- Command-line pushes were rejected with HTTP 403 by the Codespace token.
+  The connected GitHub account has write access to voluptuary/nup-gui, so the
+  tested files were published through that connection on
+  fix/codespace-metadata-roundtrip. The code commit is
+  9f3c2285b7e51772898111a9de1d541f6feb0bfd. Its tree hash
+  7d950612ead5c2f2159d38cc64099fc88ba18918 exactly matches the tested local
+  code commit f7a55731257aff59c4c8ec750188c92b8a2dae4b. Subsequent documentation
+  updates are published on the same branch. Existing default branches and the
+  Codespaces auto-fork hook were left unchanged.
+- A live Codespace rebuild was not triggered during the connected session.
+  Use Codespaces: Rebuild Container to activate the restored configuration.
+  Keep .nup-metadata.json with extracted dumps to retain container-only metadata.
