@@ -24,7 +24,10 @@ This document records meaningful changes and enhancements made to `nup-gui` and 
 - Examined earlier native Windows CI failures: canonicalized generated artwork
   exclusions across short/long Windows paths to prevent extra content on repack;
   log-path assertions now compare filesystem identity. Manual CI dispatch was
-  denied by the current GitHub integration permissions (HTTP 403).
+  denied by the current GitHub integration permissions (HTTP 403); automatic
+  native Windows CI subsequently ran after merge and passed: 73 discovered,
+  72 passed, one POSIX FIFO skip, plus build/smoke/ZIP upload. Both previous
+  native path-alias regressions passed. Run: 42856322482.
 - Source installs now require Python 3.11+ and Pillow 13+; the executable retains
   Windows Python 3.12.10. Updated pip/setuptools/PyInstaller floors; the resolved
   ten-package Windows inventory has no known Python-package advisories in the
