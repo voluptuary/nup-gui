@@ -113,3 +113,5 @@ This document records meaningful changes and enhancements made to `nup-gui` and 
 - Renamed the target action to “Transfer metadata”.
 - Rebuilt the Windows x64 executable and ZIP with the updated dialog; the ZIP
   integrity check passed and contains only `nup-gui.exe`.
+- Replaced the ZIP asset on the v0.3.0 GitHub release with this refreshed build
+  and verified its SHA-256 against the local archive.
