@@ -9,6 +9,10 @@ before building and revise them whenever they learn a recovery step that is not 
 
 ## Project map
 
+- Work only in `https://github.com/voluptuary/nup-gui` on branch `gui`.
+  Keep `origin` as the only Git remote. Do not push, pull, commit, or open
+  pull requests against `merkin-agent/nup-gui`.
+
 - `tools/nup/nup/` is the Python NUP container implementation.
 - `tools/nup/windows_gui.py` is the Tkinter desktop GUI entry point.
 - `tools/nup/build_windows.ps1` is the native Windows build script.
@@ -35,7 +39,7 @@ PYTHONPATH=tools/nup python -m unittest discover -s tools/nup/tests -v
 2. If `.devcontainer/` is missing or damaged, recover any committed version
    first, for example with `git show <commit>:.devcontainer/Dockerfile` and
    `git show <commit>:.devcontainer/devcontainer.json`. The repository's
-   devcontainer installs Python 3.12, multiarch Wine (32-bit and 64-bit), and
+   devcontainer installs Python 3.12, 64-bit Wine, and
    Xvfb for headless Windows builds. After restoring it, use **Codespaces:
    Rebuild Container** so the Dockerfile and `postCreateCommand` run. The
    active configuration must be in `.devcontainer/`, and the Dockerfile must
@@ -50,8 +54,12 @@ PYTHONPATH=tools/nup python -m unittest discover -s tools/nup/tests -v
    Windows Python installation, or Wine initialization to lifecycle commands.
    `.devcontainer/post-create.sh` installs the editable Python package with a
    three-minute limit and bounded pip network retries. The Dockerfile bounds
-   apt network waits and retries; a cold Wine/multiarch image build still needs
-   time to download and unpack packages. Inspect the creation log to distinguish
+   apt network waits and retries; a cold Wine image build still needs
+   time to download and unpack packages. Wine32 and i386 are not required:
+   the complete executable build and GUI smoke test pass with Wine64 alone.
+   A fresh Wine 8 prefix can warn about missing syswow64/rundll32.exe during
+   initialization; this warning did not prevent the x64 build or smoke test.
+   Inspect the creation log to distinguish
    active build progress from a stalled lifecycle command.
 
    Recovery logs are at
@@ -77,10 +85,9 @@ PYTHONPATH=tools/nup python -m unittest discover -s tools/nup/tests -v
    Ubuntu/Debian with:
 
    ```sh
-   sudo dpkg --add-architecture i386
    sudo apt-get update
    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-     ca-certificates curl git unzip file wine wine64 wine32 xvfb xauth msitools
+     ca-certificates curl git unzip file wine wine64 xvfb xauth msitools
    python3 -m pip install --user -e ./tools/nup
    ```
 

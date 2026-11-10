@@ -1,11 +1,10 @@
 FROM mcr.microsoft.com/devcontainers/python:1-3.12-bookworm
 
 # Wine lets this Linux Codespace run Windows Python and PyInstaller for local
-# Windows builds. i386 is required by Debian's wine32 package.
+# Windows x64 builds. The extracted x64 Python runtime needs only Wine64.
 # The upstream image includes Yarn's apt source with an expired/missing key.
 # NUP does not use Yarn; disable its source rather than weaken apt verification.
 RUN rm -f /etc/apt/sources.list.d/yarn.list \
-    && dpkg --add-architecture i386 \
     && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update \
     && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
         ca-certificates \
@@ -15,7 +14,6 @@ RUN rm -f /etc/apt/sources.list.d/yarn.list \
         file \
         wine \
         wine64 \
-        wine32 \
         xvfb \
         xauth \
     && apt-get clean \

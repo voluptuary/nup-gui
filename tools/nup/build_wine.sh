@@ -18,7 +18,7 @@ if [[ ! -x "$wine_bin" ]]; then
   wine_bin="$(command -v wine || true)"
 fi
 if [[ ! -x "$wine_bin" ]]; then
-  echo "Wine not found. Install wine and wine32, then rerun this script." >&2
+  echo "Wine not found. Install wine and wine64, then rerun this script." >&2
   exit 1
 fi
 

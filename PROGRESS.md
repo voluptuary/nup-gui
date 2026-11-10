@@ -2,6 +2,27 @@
 
 This document records meaningful changes and enhancements made to `nup-gui` and its tooling.
 
+## Devcontainer restoration and repository isolation (2026-11-10)
+
+- Moved `bad-devcontainer/` back to `.devcontainer/`, retaining the bounded
+  apt/pip waits and the existing Yarn source repair.
+- Confirmed branch `gui` tracks `origin/gui` at `voluptuary/nup-gui`.
+  Removed the additional upstream remote and explicitly selected origin for
+  pushes. No merkin-agent references were found in working files or Git
+  remote settings. All subsequent repository work targets voluptuary/nup-gui.
+- Read AGENTS.md and the existing recovery history before making changes.
+- Removed Wine32 and the i386 architecture setup from the restored image;
+  the build uses extracted Windows x64 Python with a win64 prefix. Updated
+  bootstrap instructions and the build script dependency message accordingly.
+- Validation: Docker image build and post-create passed as vscode, with no
+  foreign package architectures installed. Built the complete Windows x64
+  executable in a fresh Wine64 prefix and passed the GUI message-loop smoke
+  test. ZIP integrity passed. Wine 8 emitted a missing syswow64/rundll32.exe
+  initialization warning but completed the build and smoke test successfully.
+  Package downloads decreased from 348 MB to 177 MB in this comparison.
+- JSON parsing, shell syntax checks, and git diff --check passed. The live
+  Codespace rebuild remains a separate action that disconnects the session.
+
 ## Codespace startup repair (2026-11-09)
 
 - Restored `.devcontainer/` from the user-provided `bad-.devcontainer/`
