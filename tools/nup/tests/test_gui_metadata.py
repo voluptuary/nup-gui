@@ -77,7 +77,7 @@ class GuiMetadataTests(unittest.TestCase):
         self.root.update()
         self.assertIsNotNone(dialog.preview_image)
         button = next(widget for widget in dialog.winfo_children()
-                      if widget.winfo_class() == "TButton" and widget.cget("text") == "Edit metadata")
+                      if widget.winfo_class() == "TButton" and widget.cget("text") == "Transfer metadata")
         with patch("windows_gui.messagebox.showinfo"), patch("windows_gui.messagebox.showerror") as error:
             button.invoke()
             deadline = time.monotonic() + 5

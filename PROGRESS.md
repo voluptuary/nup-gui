@@ -104,3 +104,12 @@ This document records meaningful changes and enhancements made to `nup-gui` and 
   `gui` source after the metadata editor layout update.
 - Confirmed the executable is a Windows x64 GUI binary and the ZIP passes
   integrity checking with only `nup-gui.exe` inside.
+
+## Confirmed source metadata updates (2026-11-10)
+
+- Added an “Update source” action to the existing NUP metadata dialog. It shows
+  the changed fields and requests confirmation before editing the selected
+  source package, preserving package contents and unrelated metadata.
+- Renamed the target action to “Transfer metadata”.
+- Rebuilt the Windows x64 executable and ZIP with the updated dialog; the ZIP
+  integrity check passed and contains only `nup-gui.exe`.

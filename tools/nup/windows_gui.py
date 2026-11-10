@@ -377,8 +377,122 @@ class NupPackagerApp:
         dlg.protocol("WM_DELETE_WINDOW", lambda: None if copying else dlg.destroy())
         edit_fields = (src_entry, dst_entry, title_entry, version_entry,
                        publisher_entry, icon_entry)
-        edit_button = ttk.Button(dlg, text="Edit metadata")
-        edit_button.grid(row=8, column=2, sticky="e", padx=10, pady=10)
+        actions_frame = ttk.Frame(dlg)
+        actions_frame.grid(row=8, column=0, columnspan=3, sticky="e", padx=10, pady=10)
+        update_source_button = ttk.Button(actions_frame, text="Update source")
+        edit_button = ttk.Button(actions_frame, text="Transfer metadata")
+        update_source_button.pack(side=tk.RIGHT)
+        edit_button.pack(side=tk.RIGHT, padx=(0, 8))
+
+        def execute_source_update() -> None:
+            nonlocal copying
+            source_path = src_var.get().strip()
+            if not source_path or not os.path.isfile(source_path):
+                messagebox.showerror(
+                    "Source Required", "Choose a valid source .nup file to update.", parent=dlg)
+                return
+            try:
+                before = load_application(source_path)
+            except Exception as exc:
+                messagebox.showerror(
+                    "Source Read Failed", f"Could not read source metadata:\n{exc}", parent=dlg)
+                return
+
+            title = title_var.get().strip()
+            version = version_var.get().strip()
+            publisher = publisher_var.get().strip()
+            icon_path = icon_var.get().strip()
+            changes: list[str] = []
+            overrides: dict[str, object] = {}
+
+            if title != before.title:
+                changes.append(f"Title: {before.title or '(empty)'} → {title or '(empty)'}")
+                overrides.update(name=title or None, clear_name=not bool(title))
+            if version != before.version:
+                changes.append(f"Display version: {before.version or '(empty)'} → {version or '(empty)'}")
+                overrides.update(display_version=version or None,
+                                 clear_display_version=not bool(version))
+            if publisher != before.publisher:
+                changes.append(f"Publisher: {before.publisher or '(empty)'} → {publisher or '(empty)'}")
+                overrides.update(publisher=publisher or None,
+                                 clear_publisher=not bool(publisher))
+
+            if icon_path and not os.path.isfile(icon_path):
+                messagebox.showerror("Icon Not Found", "The selected icon file does not exist.", parent=dlg)
+                return
+            if icon_path and not is_supported_image(icon_path):
+                messagebox.showerror("Invalid Format", "Choose a valid JPEG or PNG image.", parent=dlg)
+                return
+            icon_bytes = Path(icon_path).read_bytes() if icon_path else b""
+            if icon_bytes != before.icon:
+                def describe_icon(data: bytes) -> str:
+                    if not data:
+                        return "no icon"
+                    extension = image_extension(data) or "image"
+                    return f"{extension.lstrip('.').upper()} image ({len(data):,} bytes)"
+
+                changes.append(f"Icon: {describe_icon(before.icon)} → {describe_icon(icon_bytes)}")
+                if icon_path:
+                    overrides["icon"] = icon_path
+                else:
+                    overrides["clear_icon"] = True
+
+            if not changes:
+                messagebox.showinfo(
+                    "No Changes", "The source metadata already matches these fields.", parent=dlg)
+                return
+
+            summary = (
+                f"Update metadata in this source package?\n{source_path}\n\n"
+                + "\n".join(changes)
+                + "\n\nOnly the listed application metadata fields will be changed. "
+                  "Package contents and unrelated metadata will be preserved.\n\nContinue?"
+            )
+            if not messagebox.askyesno("Confirm source update", summary, parent=dlg):
+                return
+
+            copying = True
+            self.busy = True
+            self._set_controls_enabled(False)
+            for widget in (*edit_fields, update_source_button, edit_button):
+                widget.configure(state="disabled")
+            status_v.set("Updating source metadata and verifying the package…")
+            results = queue.Queue()
+
+            def work() -> None:
+                try:
+                    from nup.edit import edit
+                    edit(source_path, **overrides)
+                    metadata = load_application(source_path)
+                    results.put((metadata, None))
+                except Exception as exc:
+                    results.put((None, exc))
+
+            def completed_source_update() -> None:
+                nonlocal copying
+                try:
+                    metadata, error = results.get_nowait()
+                except queue.Empty:
+                    dlg.after(100, completed_source_update)
+                    return
+                copying = False
+                self.busy = False
+                self._set_controls_enabled(True)
+                for widget in (*edit_fields, update_source_button, edit_button):
+                    widget.configure(state="normal")
+                if error:
+                    status_v.set("Source update failed. Review the error before retrying.")
+                    messagebox.showerror("Source Update Failed", str(error), parent=dlg)
+                else:
+                    show_dialog_metadata(metadata)
+                    self.show_metadata(metadata)
+                    status_v.set(f"Updated source metadata in {Path(source_path).name}.")
+                    messagebox.showinfo(
+                        "Source Updated",
+                        f"Confirmed metadata changes were written to:\n{source_path}", parent=dlg)
+
+            threading.Thread(target=work, daemon=True).start()
+            dlg.after(100, completed_source_update)
 
         def execute_edit() -> None:
             nonlocal copying
@@ -397,7 +511,7 @@ class NupPackagerApp:
             copying = True
             self.busy = True
             self._set_controls_enabled(False)
-            for widget in (*edit_fields, edit_button):
+            for widget in (*edit_fields, update_source_button, edit_button):
                 widget.configure(state="disabled")
             status_v.set("Editing metadata and verifying the target package…")
             results = queue.Queue()
@@ -434,7 +548,7 @@ class NupPackagerApp:
                 copying = False
                 self.busy = False
                 self._set_controls_enabled(True)
-                for widget in (*edit_fields, edit_button):
+                for widget in (*edit_fields, update_source_button, edit_button):
                     widget.configure(state="normal")
                 if error:
                     status_v.set("Edit failed. Review the error before retrying.")
@@ -448,6 +562,7 @@ class NupPackagerApp:
             threading.Thread(target=work, daemon=True).start()
             dlg.after(100, completed)
 
+        update_source_button.configure(command=execute_source_update)
         edit_button.configure(command=execute_edit)
 
     def browse_icon(self) -> None:
