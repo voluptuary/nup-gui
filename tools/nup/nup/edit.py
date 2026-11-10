@@ -21,7 +21,7 @@ from . import format as F
 from . import meta as M
 from .read import NupReader, PackageInfo
 
-APP_TLVS: Final = (F.TLV_TITLE_NAME, F.TLV_PUBLISHER, F.TLV_DISPLAY_VERSION,
+APP_TLVS: Final = (F.TLV_NACP, F.TLV_TITLE_NAME, F.TLV_PUBLISHER, F.TLV_DISPLAY_VERSION,
                    F.TLV_ICON, F.TLV_LOCALIZED_TITLES, F.TLV_LOCALIZED_ICONS)
 _COPY_CHUNK: Final = 4 << 20
 
@@ -75,15 +75,20 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
          icon: str | None = None, lang_names: dict[str, str] | None = None,
          lang_icons: dict[str, str] | None = None, clear_name: bool = False,
          clear_publisher: bool = False, clear_display_version: bool = False,
-         clear_icon: bool = False) -> PackageInfo:
+         clear_icon: bool = False,
+         app_records: dict[int, bytes] | None = None) -> PackageInfo:
     """Edit one package's meta block in place. Returns the edited package."""
     tmp = path + ".tmp"
     try:
         r = NupReader(path)  # full validation before anything is written
         try:
             target = _resolve_package(r, package)
-            records = [M.parse_block(_old_block(r, p)) for p in r.packages]
+            original_blocks = [_old_block(r, p) for p in r.packages]
+            records = [M.parse_block(block) for block in original_blocks]
             idx = r.packages.index(target)
+            if app_records:
+                records[idx].update({t: data for t, data in app_records.items()
+                                     if t in APP_TLVS})
             records[idx] = M.merge_app_meta(
                 records[idx], name=name, publisher=publisher,
                 display_version=display_version, icon=icon, lang_names=lang_names,
@@ -91,7 +96,8 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
                 clear_publisher=clear_publisher,
                 clear_display_version=clear_display_version, clear_icon=clear_icon)
 
-            serialized = [M.serialize_block(recs) for recs in records]
+            serialized = list(original_blocks)
+            serialized[idx] = M.update_block(original_blocks[idx], records[idx])
             new_tail = b"".join(serialized)
 
             # end of the blob region = first meta block (only extents before it)

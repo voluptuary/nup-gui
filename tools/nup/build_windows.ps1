@@ -30,6 +30,7 @@ python -m PyInstaller `
   --exclude-module _hashlib `
   --exclude-module _ssl `
   --exclude-module ssl `
+  --exclude-module _wmi `
   --icon $iconFile `
   --add-data "$iconFile;assets" `
   --distpath $distDir `

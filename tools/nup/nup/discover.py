@@ -72,6 +72,7 @@ class PackInput:
     npdm: bytes | None = None
     build_id: bytes | None = None
     source_path: str | None = None
+    preserved_meta: bytes | None = None
 
 
 def _find_npdm(src: str) -> str | None:
@@ -236,6 +237,8 @@ class Tree:
     """Node store for one pack run (global across packages)."""
 
     artifacts: set[bytes]
+    excluded_files: set[str] = field(default_factory=set)
+    prune_dirs: set[str] = field(default_factory=set)
     cancel: Callable[[], bool] | None = field(default=None, repr=False)
     dirs: list[DirObj] = field(default_factory=list)
     files: list[FileObj] = field(default_factory=list)
@@ -267,9 +270,13 @@ class Tree:
             raise SystemExit(f"pack: cannot read {src}: {exc}")
         for entry in entries:
             _check_cancel(self.cancel)
+            if os.path.abspath(entry.path) in self.excluded_files:
+                continue
             ename = entry.name.encode("utf-8", "surrogateescape")
             if entry.is_dir(follow_symlinks=False):
-                node.children.append(self._walk(entry.path, ename))
+                child = self._walk(entry.path, ename)
+                if child.children or os.path.abspath(entry.path) not in self.prune_dirs:
+                    node.children.append(child)
             elif ename not in self.artifacts:
                 node.children.append(FileObj(ename, entry.path))
         return node

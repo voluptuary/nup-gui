@@ -52,7 +52,7 @@ KIND_NAMES: Final = {
 
 # Meta TLV types (SPEC §5)
 class TVL(IntEnum):
-    NPDM = 0
+    NPDM = 0x0001
     NACP = auto()
     ICON = auto()
     DISPLAY_VERSION = auto()

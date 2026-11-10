@@ -185,3 +185,22 @@ Exit codes: `0` ok, `1` verification failed (problems listed), `2` malformed inp
 SPEC.md            format specification
 tools/nup/       reference implementation (Python)
 ```
+
+### Preserving metadata during conversions
+
+When extracting a NUP, keep the generated `.nup-metadata.json` file beside the
+`base`, `updates`, and `dlc` folders. It preserves the original package identity
+and raw metadata, including localized titles/icons and unknown records. Repack
+that complete dump to retain them. Unchanged artwork generated from metadata
+is excluded from the repacked content tree; original content files are retained.
+Explicitly supplied metadata replaces the corresponding values.
+
+The GUI imports title, publisher, display version, and JPEG/PNG artwork from NUP
+metadata, with localized fallbacks. Dump imports read those text fields from
+`control.nacp` rather than guessing from folder names or numeric package versions.
+The NACP layout follows [libnx's NACP definition](https://github.com/switchbrew/libnx/blob/master/nx/include/switch/nacp.h).
+
+“Import from .nup to .nup” previews and copies application metadata, including
+NACP and localized records, then verifies the target. It leaves the source
+unchanged and preserves the target's content files, NPDM, build IDs, provenance,
+and unknown metadata. Fields absent from the source keep their target values.
