@@ -21,6 +21,10 @@ This document records meaningful changes and enhancements made to `nup-gui` and 
   Wine can report symlink creation success without creating a link; capability
   tests now verify the link exists. Windows stat/fstat creation-time differences
   are excluded from edit identity checks while inode/size/mtime remain checked.
+- Examined earlier native Windows CI failures: canonicalized generated artwork
+  exclusions across short/long Windows paths to prevent extra content on repack;
+  log-path assertions now compare filesystem identity. Manual CI dispatch was
+  denied by the current GitHub integration permissions (HTTP 403).
 - Source installs now require Python 3.11+ and Pillow 13+; the executable retains
   Windows Python 3.12.10. Updated pip/setuptools/PyInstaller floors; the resolved
   ten-package Windows inventory has no known Python-package advisories in the

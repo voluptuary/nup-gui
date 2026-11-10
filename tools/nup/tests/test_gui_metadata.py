@@ -430,4 +430,4 @@ class ErrorLogTests(unittest.TestCase):
         logger.error("Fallback error")
         destination = fallback / "NUP Packager" / "error.log"
         self.assertIn("Fallback error", destination.read_text(encoding="utf-8"))
-        self.assertEqual(Path(logger.handlers[0].baseFilename), destination)
+        self.assertTrue(Path(logger.handlers[0].baseFilename).samefile(destination))

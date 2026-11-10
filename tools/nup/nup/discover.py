@@ -13,6 +13,7 @@ import os
 import re
 import struct
 import stat
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from . import format as F
@@ -278,8 +279,6 @@ class Tree:
             raise SystemExit(f"pack: cannot read {src}: {exc}")
         for entry in entries:
             _check_cancel(self.cancel)
-            if os.path.abspath(entry.path) in self.excluded_files:
-                continue
             ename = entry.name.encode("utf-8", "surrogateescape")
             if ename in self.artifacts:
                 continue
@@ -290,9 +289,12 @@ class Tree:
             info = entry.stat(follow_symlinks=False)
             if is_link(info) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
                 raise F.NupError(f"source entry is a link or special file: {entry.path!r}")
+            canonical = str(Path(entry.path).resolve())
+            if canonical in self.excluded_files:
+                continue
             if entry.is_dir(follow_symlinks=False):
                 child = self._walk(entry.path, ename, depth + 1)
-                if child.children or os.path.abspath(entry.path) not in self.prune_dirs:
+                if child.children or canonical not in self.prune_dirs:
                     node.children.append(child)
             elif ename not in self.artifacts:
                 node.children.append(FileObj(ename, entry.path))
