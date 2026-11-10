@@ -87,6 +87,9 @@ modify either consumer. See AGENTS.md for its prerequisites and invocation.
 - Windows Python 3.12.10/Wine64: **73 discovered; 70 passed, 3 skipped**. The skips
   are a POSIX FIFO and two real symlink-creation tests that Wine cannot execute.
   All three run on Linux; Windows reparse attributes are tested separately.
+- Native Windows CI: **73 discovered; 72 passed, 1 POSIX FIFO skip**. The
+  GUI, actual symlink tests, build, executable smoke test and ZIP upload passed
+  on [the merged application commit](https://github.com/voluptuary/nup-gui/actions/runs/42856322482).
 - The supported source minimum, Python 3.11, passed 53 core/CLI tests. GUI
   integration uses the configured Linux display and Windows runtime.
 - 400 deterministic authenticated-TOC mutations must either open cleanly or
@@ -102,10 +105,10 @@ modify either consumer. See AGENTS.md for its prerequisites and invocation.
   Pillow 13. No claim is made that earlier shipped executables contained the
   development environment's pip/setuptools versions.
 - Shell syntax, license synchronization, and `git diff --check` pass. The updated
-  workflow configures an additional native-Windows build/smoke/test gate. No
-  new native run was available during this audit: manual dispatch returned
-  HTTP 403 (integration permissions). The native-Windows failures from the
-  previous release run were inspected and their path-alias causes fixed.
+  workflow passed its native-Windows build/smoke/test/artifact gate after merge.
+  Manual dispatch initially returned HTTP 403 (integration permissions), but
+  automatic runs started after merge/tag update. The previous release run's
+  Windows path-alias failures are fixed and both regressions passed natively.
 
 ## Limits and remaining risks
 
