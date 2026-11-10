@@ -38,7 +38,20 @@ class ErrorLogHandler(logging.FileHandler):
     """Open the first writable destination only when an error is emitted."""
     def __init__(self, paths: list[Path]) -> None:
         self.paths = paths
+        self.failure = None
         super().__init__(paths[0], mode="a", encoding="utf-8", delay=True)
+
+    def handleError(self, record) -> None:
+        self.failure = str(sys.exc_info()[1])
+
+    def emit(self, record) -> None:
+        self.failure = None
+        try:
+            super().emit(record)
+        except (OSError, ValueError) as exc:
+            # A failed diagnostic destination must not strand a GUI worker.
+            self.failure = str(exc)
+
 
     def _open(self):
         for path in self.paths:
@@ -221,7 +234,10 @@ class NupPackagerApp:
 
     def show_error(self, title: str, message: str, **options) -> None:
         self.error_logger.error("%s: %s", title, message, exc_info=sys.exc_info()[0] is not None)
-        messagebox.showerror(title, f"{message}\n\nError log: {self.error_log_path}", **options)
+        failure = next((handler.failure for handler in self.error_logger.handlers
+                        if isinstance(handler, ErrorLogHandler) and handler.failure), None)
+        detail = f"Error log could not be written: {failure}" if failure else f"Error log: {self.error_log_path}"
+        messagebox.showerror(title, f"{message}\n\n{detail}", **options)
 
     def report_callback_exception(self, kind, value, tb) -> None:
         self.error_logger.error("Unhandled GUI callback", exc_info=(kind, value, tb))
@@ -250,12 +266,14 @@ class NupPackagerApp:
             label.configure(image="", text="No artwork")
             return None
         try:
-            with Image.open(icon_path) as image:
+            with Image.open(icon_path, formats=("JPEG", "PNG")) as image:
+                if image.width * image.height > 16_000_000:
+                    raise ValueError("artwork exceeds the 16-megapixel preview limit")
                 image.thumbnail((ARTWORK_SIZE, ARTWORK_SIZE), Image.Resampling.LANCZOS)
                 preview = ImageTk.PhotoImage(image.convert("RGBA"), master=self.root)
             label.configure(image=preview, text="")
             return preview
-        except (OSError, ValueError, tk.TclError):
+        except (OSError, ValueError, tk.TclError, Image.DecompressionBombError):
             self.error_logger.exception("Previewing artwork: %s", icon_path)
             label.configure(image="", text="Cannot preview image")
             return None
@@ -455,7 +473,9 @@ class NupPackagerApp:
                 icon_path = str(Path(self.metadata_files.name) / f"edit-icon-{time.time_ns()}{image_extension(metadata.icon) or '.dat'}")
                 Path(icon_path).write_bytes(metadata.icon)
             icon_var.set(icon_path)
-            preview_text.set(f"Title: {metadata.title or '—'}  |  Publisher: {metadata.publisher or '—'}  |  Version: {metadata.version or '—'}")
+            def short(value: str) -> str:
+                return value[:60] + "…" if len(value) > 60 else value or "—"
+            preview_text.set(f"Title: {short(metadata.title)}  |  Publisher: {short(metadata.publisher)}  |  Version: {short(metadata.version)}")
 
         def refresh_fields(*_args) -> None:
             selected = src_var.get().strip() or dst_var.get().strip()
@@ -468,7 +488,7 @@ class NupPackagerApp:
                 status_v.set(f"Could not load metadata: {exc}")
 
         src_var.trace_add("write", refresh_fields)
-        dst_var.trace_add("write", refresh_fields)
+        dst_var.trace_add("write", lambda *_: refresh_fields() if not src_var.get().strip() else None)
 
         copying = False
         edit_fields = (src_entry, dst_entry, title_entry, version_entry,
@@ -565,7 +585,7 @@ class NupPackagerApp:
                     edit(source_path, **overrides)
                     metadata = load_application(source_path)
                     results.put((metadata, None))
-                except Exception as exc:
+                except (Exception, SystemExit) as exc:
                     self.error_logger.exception("Metadata operation: source=%s", source_path)
                     results.put((None, exc))
 
@@ -593,7 +613,11 @@ class NupPackagerApp:
                         "Source Updated",
                         f"Confirmed metadata changes were written to:\n{source_path}", parent=dlg)
 
-            threading.Thread(target=work, daemon=True).start()
+            try:
+                threading.Thread(target=work, daemon=True).start()
+            except Exception as exc:
+                self.error_logger.exception("Starting source update")
+                results.put((None, exc))
             dlg.after(100, completed_source_update)
 
         def execute_edit() -> None:
@@ -621,10 +645,23 @@ class NupPackagerApp:
             except Exception as exc:
                 self.show_error("Transfer Read Failed", f"Could not prepare metadata transfer:\n{exc}", parent=dlg)
                 return
+            incoming = (source_metadata.title, source_metadata.version, source_metadata.publisher,
+                        source_metadata.icon) if source_metadata is not None else None
+            original_values = incoming if incoming is not None else (before.title, before.version, before.publisher, before.icon)
+            clears = tuple(not value and bool(original_values[index])
+                           for index, value in enumerate(values))
+            supplied = tuple(value if value != original_values[index] else None
+                             for index, value in enumerate(values[:3]))
+            proposed = tuple(old if incoming is not None and not incoming[index] and not values[index]
+                             else values[index]
+                             for index, old in enumerate((before.title, before.version, before.publisher)))
+            icon_override = values[3] if icon_bytes != original_values[3] else None
+            if incoming is not None and not incoming[3] and not values[3]:
+                icon_bytes = before.icon
             changes = []
-            for label, old, new in (("Title", before.title, values[0]),
-                                    ("Display version", before.version, values[1]),
-                                    ("Publisher", before.publisher, values[2])):
+            for label, old, new in (("Title", before.title, proposed[0]),
+                                    ("Display version", before.version, proposed[1]),
+                                    ("Publisher", before.publisher, proposed[2])):
                 if old != new:
                     changes.append(f"{label}: {old or '(empty)'} → {new or '(empty)'}")
             if before.icon != icon_bytes:
@@ -637,10 +674,14 @@ class NupPackagerApp:
                                     (F.TLV_LOCALIZED_ICONS, "Complete localized icons")):
                     if kind in source_metadata.records and source_metadata.records[kind] != before.records.get(kind):
                         changes.append(f"{label}: replace from source")
+            field_policy = ("Fields absent from the source preserve the target values. "
+                            "Clearing an imported field removes its default target field. "
+                            if source_metadata is not None else
+                            "Empty editable fields clear their corresponding default target fields. ")
             summary = (f"Source: {source_path or 'edited fields (no source package)'}\n"
                        f"Target to modify: {target_path}\n\n"
                        + ("\n".join(changes) if changes else "Selected application metadata matches the target.")
-                       + "\n\nEmpty editable fields clear their corresponding target fields. "
+                       + "\n\n" + field_policy +
                          "Package contents and unrelated metadata will be preserved. "
                          "The source package will remain unchanged.\n\nContinue?")
             if not messagebox.askyesno("Confirm metadata transfer" if source_path else "Confirm target update",
@@ -658,14 +699,14 @@ class NupPackagerApp:
 
             def work() -> None:
                 try:
-                    overrides = dict(name=values[0] or None,
-                                     display_version=values[1] or None,
-                                     publisher=values[2] or None,
-                                     icon=values[3] or None,
-                                     clear_name=not bool(values[0]),
-                                     clear_display_version=not bool(values[1]),
-                                     clear_publisher=not bool(values[2]),
-                                     clear_icon=not bool(values[3]))
+                    overrides = dict(name=supplied[0] or None,
+                                     display_version=supplied[1] or None,
+                                     publisher=supplied[2] or None,
+                                     icon=icon_override or None,
+                                     clear_name=clears[0],
+                                     clear_display_version=clears[1],
+                                     clear_publisher=clears[2],
+                                     clear_icon=clears[3])
                     if source_path:
                         metadata = copy_application(source_path, target_path, **overrides)
                     else:
@@ -673,7 +714,7 @@ class NupPackagerApp:
                         edit(target_path, **overrides)
                         metadata = load_application(target_path)
                     results.put((metadata, None))
-                except Exception as exc:
+                except (Exception, SystemExit) as exc:
                     self.error_logger.exception("Metadata operation: source=%s", source_path)
                     results.put((None, exc))
 
@@ -699,7 +740,11 @@ class NupPackagerApp:
                     messagebox.showinfo("Success", f"Metadata edited successfully in:\n{target_path}", parent=dlg)
                     status_v.set(f"Edited and verified metadata in {Path(target_path).name}.")
 
-            threading.Thread(target=work, daemon=True).start()
+            try:
+                threading.Thread(target=work, daemon=True).start()
+            except Exception as exc:
+                self.error_logger.exception("Starting metadata transfer")
+                results.put((None, exc))
             dlg.after(100, completed)
 
         update_source_button.configure(command=execute_source_update)
@@ -837,14 +882,19 @@ class NupPackagerApp:
         self.status.set("Scanning dump contents..." if mode == "pack" else "Reading NUP package...")
         self.progress_mode = "indeterminate"
         self.start_progress(self.progress)
-        threading.Thread(
-            target=self.operation_worker,
-            args=(mode, source, output, self.cancel_event,
-                  self.icon.get().strip() or None,
-                  self.title_name.get().strip() or None,
-                  self.display_version.get().strip() or None,
-                  self.publisher.get().strip() or None), daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=self.operation_worker,
+                args=(mode, source, output, self.cancel_event,
+                      self.icon.get().strip() or None,
+                      self.title_name.get().strip() or None,
+                      self.display_version.get().strip() or None,
+                      self.publisher.get().strip() or None), daemon=True,
+            ).start()
+        except Exception as exc:
+            self.error_logger.exception("Starting NUP operation")
+            self.events.put(("error", "", "", f"{type(exc).__name__}: {exc}"))
+
 
     def cancel_operation(self) -> None:
         if self.cancel_event is None or self.cancel_event.is_set():

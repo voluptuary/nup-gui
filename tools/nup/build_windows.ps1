@@ -7,8 +7,10 @@ $buildDir = Join-Path $projectDir 'build-win'
 $distDir = Join-Path $repoRoot 'dist'
 $iconFile = Join-Path $projectDir 'launcher/assets/NUP_GUI_Packager.ico'
 
-python -m pip install --upgrade pip
-python -m pip install $projectDir pyinstaller
+python -m pip install --upgrade "pip>=26.2" "setuptools>=84.1"
+if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed.' }
+python -m pip install $projectDir "pyinstaller>=6.22.3"
+if ($LASTEXITCODE -ne 0) { throw 'Build dependency installation failed.' }
 
 if (Test-Path $buildDir) { Remove-Item $buildDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null

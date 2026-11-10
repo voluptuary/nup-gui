@@ -175,6 +175,8 @@ def parse_super(buf: bytes) -> Super:
         raise NupError(f"bad magic {magic!r}, expected {MAGIC[0:3]!r}")
     if magic[3] != 1:
         raise NupError(f"unsupported format major version {magic[3]}")
+    if header_version < 1 or package_count < 1:
+        raise NupError("invalid header version or empty package table")
     if header_size < HEADER_SIZE:
         raise NupError(f"header_size {header_size:#x} < {HEADER_SIZE:#x}")
     if reserved != b"\0" * 32:
@@ -192,7 +194,7 @@ def parse_pkg(buf: bytes, off: int) -> Package:
      meta_offset, meta_size) = _pkg_s.unpack_from(buf, off)
     if kind >= len(KIND_NAMES):
         raise NupError(f"unknown package kind {kind}")
-    if _r != 0 or _r2 != 0:
+    if _r != 0 or _r2 != 0 or any(buf[off + 44:off + PKG_SIZE]):
         raise NupError("package reserved bytes not zero")
     return Package(title_id=title_id, root_dir=root, exefs_dir=exefs, romfs_dir=romfs,
                    version=version, kind=kind, flags=flags,
@@ -203,7 +205,9 @@ def parse_file(toc: bytes, pos: int) -> tuple[tuple[int, int], int, bytes, int, 
     (off, ln, size, eoff, esz, sha, codec, cflags, _r4) = \
         _file_s.unpack_from(toc, pos)
     pos += FILE_SIZE
-    if codec not in Codec:
+    if _r4 or any(toc[pos - FILE_SIZE + 68:pos]):
+        raise NupError("file reserved bytes not zero")
+    if codec not in (CODEC_RAW, CODEC_ZSTD):
         raise NupError(f"unknown extent codec {codec}")
     codec = Codec(codec)
     if cflags != 0:

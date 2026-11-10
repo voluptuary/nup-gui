@@ -1,8 +1,5 @@
-"""NUP verifier: structural conformance + deep content verification."""
-
+"""NUP structural and streaming content verification."""
 from __future__ import annotations
-
-import hashlib
 
 from . import format as F
 from .access import app_meta
@@ -10,94 +7,48 @@ from .icons import image_extension
 from .read import NupReader
 
 
+class _Discard:
+    def write(self, data: bytes) -> int:
+        return len(data)
+
+
 def verify(path: str, deep: bool = False) -> tuple[bool, list[str]]:
-    """Returns (ok, problems). `deep` recomputes every file's SHA-256."""
-    problems: list[str] = []
+    problems = []
     try:
-        r = NupReader(path)
-    except F.NupError as e:
-        return False, [f"open: {e}"]
-
-    def fail(msg: str) -> None:
-        problems.append(msg)
-
-    s = r.super
-    app_package = next((p for p in r.packages if p.kind == F.KIND_BASE), r.packages[0])
-    icon = app_meta(r, app_package).get(F.TLV_ICON)
-    if icon is not None and image_extension(icon) is None:
-        fail("application icon metadata is not a supported JPEG/PNG image")
-    if s["toc_offset"] != F.HEADER_SIZE:
-        fail(f"toc_offset {s['toc_offset']:#x} != {F.HEADER_SIZE:#x} (v1)")
-    if s["file_size"] < s["blob_offset"]:
-        fail("file_size smaller than blob_offset")
-
-    # slot overlap check: ranges must be disjoint
-    ranges = sorted((first, first + count, i)
-                    for i, (_, first, count) in enumerate(r.dirs))
-    for (a1, a2, ai), (b1, b2, bi) in zip(ranges, ranges[1:]):
-        if a2 > b1:
-            fail(f"child slot ranges overlap: dirs {ai} and {bi}")
-
-    # sorted + unique children per dir (producer conformance §6.2)
-    for di, (name, first, count) in enumerate(r.dirs):
-        kids = r.children[first:first + count]
-        names = []
-        for cid in kids:
-            if cid >= r.dir_count:
-                names.append(r.files[cid - r.dir_count][0])
-            else:
-                names.append(r.dirs[cid][0])
-        if names != sorted(names):
-            fail(f"dir {di} ({name!r}): children not sorted")
-        if len(set(names)) != len(names):
-            fail(f"dir {di} ({name!r}): duplicate child names")
-
-    # one global traversal from package roots: cycle + orphan detection, O(n)
-    visited: set[int] = set()
-    for p in r.packages:
-        stack: list[tuple[int, tuple[int, ...]]] = [(p.root_dir, (p.root_dir,))]
-        while stack:
-            di, path_ids = stack.pop()
-            if di in path_ids[:-1]:
-                fail(f"cycle detected through dir {di}")
-                continue
-            if di in visited:
-                continue
-            visited.add(di)
-            _, first, count = r.dirs[di]
-            for cid in r.children[first:first + count]:
-                if cid < r.dir_count:
-                    stack.append((cid, path_ids + (cid,)))
-    orphans = set(range(r.dir_count)) - visited
-    if orphans:
-        fail(f"{len(orphans)} unreachable dir nodes (orphans)")
-
-    referenced: set[int] = {cid - r.dir_count for cid in r.children if cid >= r.dir_count}
-    unreferenced = set(range(r.file_count)) - referenced
-    if unreferenced:
-        names = [r.files[fi][0] for fi in sorted(unreferenced)[:8]]
-        more = "..." if len(unreferenced) > len(names) else ""
-        fail(f"{len(unreferenced)} file node(s) not referenced by any child slot "
-             f"(unextractable): {[n.decode('utf-8', 'replace') for n in names]}{more}")
-
-    if deep:
-        seen_extents: dict[tuple[int, int, int], bytes] = {}
-        for fi, (name, size, sha, eoff, esz, codec) in enumerate(r.files):
-            try:
-                data = r.read_file(fi)
-            except F.NupError as e:
-                fail(f"file {fi} ({name!r}): read failed: {e}")
-                continue
-            if hashlib.sha256(data).digest() != sha:
-                fail(f"file {fi} ({name!r}): SHA-256 mismatch")
-            if codec == F.CODEC_RAW and esz != size:
-                fail(f"file {fi} ({name!r}): raw extent size {esz} != {size}")
-            key = (eoff, esz, codec)
-            if key in seen_extents:
-                if seen_extents[key] != sha:
-                    fail(f"file {fi} ({name!r}): shares extent with different hash")
-            else:
-                seen_extents[key] = sha
-
-    r.close()
+        with NupReader(path) as reader:
+            package = next((p for p in reader.packages if p.kind == F.KIND_BASE), reader.packages[0])
+            icon = app_meta(reader, package).get(F.TLV_ICON)
+            if icon is not None and image_extension(icon) is None:
+                problems.append("application icon metadata is not a supported JPEG/PNG image")
+            visited = set()
+            referenced = set()
+            stack = [p.root_dir for p in reader.packages]
+            while stack:
+                current = stack.pop()
+                if current in visited:
+                    continue
+                visited.add(current)
+                _, first, count = reader.dirs[current]
+                for child in reader.children[first:first + count]:
+                    if child < reader.dir_count:
+                        stack.append(child)
+                    else:
+                        referenced.add(child - reader.dir_count)
+            if len(visited) != reader.dir_count:
+                problems.append(f"{reader.dir_count - len(visited)} unreachable directories")
+            if len(referenced) != reader.file_count:
+                problems.append(f"{reader.file_count - len(referenced)} unreferenced file nodes")
+            if deep:
+                checked = set()
+                for index, (name, size, sha, offset, stored, codec) in enumerate(reader.files):
+                    identity = (size, sha, offset, stored, codec)
+                    if identity in checked:
+                        continue
+                    try:
+                        reader.copy_file(index, _Discard())
+                    except F.NupError as exc:
+                        problems.append(f"file {index} ({name!r}): {exc}")
+                    checked.add(identity)
+    except (F.NupError, OSError) as exc:
+        problems.append(f"open: {exc}")
     return not problems, problems

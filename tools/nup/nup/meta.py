@@ -9,6 +9,7 @@ records are sorted by TLV type and written without padding.
 from __future__ import annotations
 
 import struct
+import re
 from typing import Protocol
 
 from . import format as F
@@ -23,7 +24,8 @@ class MetaSource(Protocol):
 
 
 def read_file(path: str) -> bytes:
-    with open(path, "rb") as fh:
+    from .sourceio import open_source
+    with open_source(path) as fh:
         return fh.read()
 
 
@@ -33,7 +35,7 @@ def parse_block(block: bytes, *, normalize: bool = True) -> dict[int, bytes]:
     pos = 0
     while pos + 8 <= len(block):
         t, _r, size = F._tlv_s.unpack_from(block, pos)
-        if pos + 8 + size > len(block):
+        if _r or pos + 8 + size > len(block):
             raise F.NupError("meta TLV overruns block")
         out.setdefault(t, bytes(block[pos + 8:pos + 8 + size]))
         pos += 8 + size
@@ -75,6 +77,9 @@ def update_block(block: bytes, records: dict[int, bytes]) -> bytes:
         pos += 8 + size
     for kind in sorted(records.keys() - seen):
         out += F._tlv_s.pack(kind, 0, len(records[kind])) + records[kind]
+    # SPEC §5 ends parsing when fewer than eight bytes remain. Keep that
+    # opaque tail (including legacy alignment padding) after any new records.
+    out += block[pos:]
     return bytes(out)
 
 
@@ -98,6 +103,8 @@ def decode_localized(payload: bytes) -> dict[bytes, bytes]:
             raise F.NupError("truncated or empty localized language tag")
         lang = payload[pos:pos + lang_len]
         pos += lang_len
+        if not re.fullmatch(rb"[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*", lang):
+            raise F.NupError("invalid localized language tag")
         try:
             lang.decode("ascii")
         except UnicodeDecodeError as exc:
@@ -106,6 +113,8 @@ def decode_localized(payload: bytes) -> dict[bytes, bytes]:
         pos += 4
         if pos + data_len > len(payload):
             raise F.NupError("localized record overruns TLV")
+        if lang.lower() in out:
+            raise F.NupError("duplicate localized language tag")
         out[lang.lower()] = payload[pos:pos + data_len]
         pos += data_len
     return out
@@ -192,10 +201,16 @@ def meta_block(pkg: MetaSource, dump_label: str, app_extra: bytes = b"") -> byte
 def _encode_localized(entries: dict[str, bytes]) -> bytes:
     """Encode {lang tag: data} as a LocalizedRecord sequence (SPEC §5.1)."""
     body = bytearray()
+    seen = set()
     for lang in sorted(entries):
-        tag = lang.lower().encode("ascii")
-        if not 0 < len(tag) <= 255:
-            raise SystemExit(f"pack: bad language tag {lang!r}")
+        try:
+            tag = lang.lower().encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise F.NupError(f"invalid language tag {lang!r}") from exc
+        if (not 0 < len(tag) <= 255 or tag in seen
+                or not re.fullmatch(rb"[a-z]{1,8}(?:-[a-z0-9]{1,8})*", tag)):
+            raise F.NupError(f"invalid or duplicate language tag {lang!r}")
+        seen.add(tag)
         data = entries[lang]
         body += bytes([len(tag)]) + tag
         body += struct.pack("<I", len(data)) + data

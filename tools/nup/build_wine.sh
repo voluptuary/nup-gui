@@ -7,7 +7,7 @@ if [[ -z "${DISPLAY:-}" && -z "${NUP_WINE_XVFB:-}" ]] && command -v xvfb-run >/d
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-build_root="${NUP_WIN_BUILD_DIR:-${TMPDIR:-/tmp}/nup-windows-build}"
+build_root="${NUP_WIN_BUILD_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/nup-windows-build}"
 python_version="3.12.10"
 python_dir="$build_root/python"
 
@@ -21,6 +21,31 @@ if [[ ! -x "$wine_bin" ]]; then
   echo "Wine not found. Install wine and wine64, then rerun this script." >&2
   exit 1
 fi
+
+# Keep build deletions/downloads out of shared predictable /tmp directories.
+# A preexisting nonempty directory must carry our ownership marker.
+python3 - "$build_root" <<'PYGUARD'
+import os
+import stat
+import sys
+from pathlib import Path
+root = Path(sys.argv[1]).absolute()
+marker = root / ".nup-build-root"
+if root.is_symlink():
+    raise SystemExit("build: build directory must not be a symlink")
+if root.exists():
+    info = root.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
+        raise SystemExit("build: build directory must be owned by this user and not writable by others")
+    if any(root.iterdir()) and (marker.is_symlink() or not marker.is_file()
+                               or marker.read_text() != "nup-windows-build-v1\n"):
+        raise SystemExit("build: nonempty unmarked build directory; select a fresh NUP_WIN_BUILD_DIR")
+root.mkdir(mode=0o700, parents=True, exist_ok=True)
+marker.write_text("nup-windows-build-v1\n")
+for name in ("python", "pyinstaller-build"):
+    if (root / name).is_symlink():
+        raise SystemExit("build: refusing to delete a symlinked build runtime")
+PYGUARD
 
 mkdir -p "$build_root" "$dist_dir"
 
@@ -96,8 +121,8 @@ restore_shutil() {
 trap restore_shutil EXIT
 
 "$wine_bin" "$python_win" -m ensurepip --upgrade
-"$wine_bin" "$python_win" -m pip install --upgrade pip --no-warn-script-location
-"$wine_bin" "$python_win" -m pip install "$root_win\\tools\\nup" pyinstaller --no-warn-script-location
+"$wine_bin" "$python_win" -m pip install --upgrade "pip>=26.2" "setuptools>=84.1" --no-warn-script-location
+"$wine_bin" "$python_win" -m pip install "$root_win\\tools\\nup" "pyinstaller>=6.22.3" --no-warn-script-location
 
 restore_shutil
 trap - EXIT

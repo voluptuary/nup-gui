@@ -1,16 +1,16 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=84.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "nup"
 dynamic = ["version"]
 description = "Reference implementation of the NUP (NX Package) container format for Switch 1/2 game dumps"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 #readme = {file = "../../README.md", content-type = "text/markdown"}
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = ["zstandard>=0.22", "Pillow>=10.4"]
+dependencies = ["zstandard>=0.22", "Pillow>=13.0"]
 
 [tool.setuptools.dynamic]
 version = {attr = "nup.__init__.__version__"}

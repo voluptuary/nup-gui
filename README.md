@@ -19,7 +19,7 @@ decrypt the game and package it into an nup. (which i am not aware of for Switch
 
 ## Tools
 
-`tools/nup/` is the Python reference implementation:
+`tools/nup/` is the Python reference implementation (Python 3.11 or newer):
 
 ```
 pip install ./tools/nup          # or: PYTHONPATH=tools/nup python3 -m nup.cli
@@ -33,7 +33,7 @@ The repository builds a Windows x64 GUI executable. On Windows, run
 `tools/nup/build_wine.sh`. Both write `dist/nup-gui.exe` and
 `dist/nup-gui-windows-x64.zip`, which contains only the GUI executable. The
 GitHub Actions workflow uploads this GUI ZIP, and releases publish that ZIP at
-[GitHub Releases](https://github.com/voluptuary/nup/releases/latest).
+[GitHub Releases](https://github.com/voluptuary/nup-gui/releases).
 
 The GUI is a single-file Tkinter application packaged with PyInstaller. Its
 background worker calls the NUP packer directly, so it does not launch

@@ -98,12 +98,24 @@ def copy_application(source: str, target: str, *, name: str | None = None,
     # Preserve localized sets and absent target fields; never copy NPDM, build
     # IDs, or provenance from an unrelated game. edit uses atomic replacement.
     target_before = load_application(target)
-    edit(target, app_records=metadata.records, name=name, publisher=publisher,
-         display_version=display_version, icon=icon, clear_name=clear_name,
-         clear_publisher=clear_publisher, clear_display_version=clear_display_version,
-         clear_icon=clear_icon)
+    # Preserve literal source/target records whenever their effective values
+    # already match. Materialize a default only when stale target defaults or
+    # replaced fallback records would otherwise change the intended value.
+    application_records = dict(metadata.records)
+    projected_records = dict(target_before.records)
+    projected_records.update(application_records)
+    projected = from_records(projected_records)
+    if name is None and not clear_name and projected.title != (metadata.title or target_before.title):
+        name = metadata.title or target_before.title or None
+    if publisher is None and not clear_publisher and projected.publisher != (metadata.publisher or target_before.publisher):
+        publisher = metadata.publisher or target_before.publisher or None
+    if display_version is None and not clear_display_version and projected.version != (metadata.version or target_before.version):
+        display_version = metadata.version or target_before.version or None
+    wanted_icon = metadata.icon or target_before.icon
+    if wanted_icon and not clear_icon and projected.icon != wanted_icon:
+        application_records[F.TLV_ICON] = wanted_icon
     expected_records = dict(target_before.records)
-    expected_records.update(metadata.records)
+    expected_records.update(application_records)
     for kind, value, clear in (
         (F.TLV_TITLE_NAME, name, clear_name),
         (F.TLV_PUBLISHER, publisher, clear_publisher),
@@ -118,10 +130,15 @@ def copy_application(source: str, target: str, *, name: str | None = None,
     elif icon is not None:
         expected_records[F.TLV_ICON] = Path(icon).read_bytes()
     expected = from_records(expected_records)
-    actual = load_application(target)
-    if actual.records != expected.records:
-        raise F.NupError("Target metadata verification failed after editing")
-    return actual
+    def validate(staged: str) -> None:
+        actual = load_application(staged)
+        if actual.records != expected.records:
+            raise F.NupError("Target metadata verification failed before replacing original")
+    edit(target, app_records=application_records, name=name, publisher=publisher,
+         display_version=display_version, icon=icon, clear_name=clear_name,
+         clear_publisher=clear_publisher, clear_display_version=clear_display_version,
+         clear_icon=clear_icon, validate=validate)
+    return load_application(target)
 
 
 def nacp_metadata(data: bytes) -> ApplicationMetadata:
@@ -157,8 +174,11 @@ def nacp_metadata(data: bytes) -> ApplicationMetadata:
         start = index * 0x300
         name = text_value(titles[start:start + 0x200].split(b"\0", 1)[0])
         author = text_value(titles[start + 0x200:start + 0x300].split(b"\0", 1)[0])
-        if name:
-            title, publisher = name, author
+        if not title and name:
+            title = name
+        if not publisher and author:
+            publisher = author
+        if title and publisher:
             break
     return ApplicationMetadata(title, publisher, version)
 
