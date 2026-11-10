@@ -178,10 +178,20 @@ warning rather than losing their package tree.
   the rightmost action; all editor buttons use the same width. Both source
   updates and target transfers require a contextual confirmation showing paths
   and changes before writing; cancelling must leave both packages unchanged.
+- Artwork previews use identical fixed 112×112 pixel boxes and 96×96 maximum
+  thumbnails, preserving aspect ratio. Keep both pack and metadata editor
+  previews square when resizing, empty, loaded, or showing an error.
+- Packing, extraction, source updates, and metadata transfers use the same
+  progress-bar style and start/stop helpers. Metadata edits use an indeterminate
+  bar during editing and verification; hide it on success and failure, and do
+  not show it for cancelled confirmations.
 - The GUI appends UTF-8 diagnostics and exception tracebacks to `error.log`
   beside the frozen executable (working directory when running from source).
   If that location is unwritable, use `%LOCALAPPDATA%/NUP Packager/error.log`
   on Windows or `~/.local/state/NUP Packager/error.log` otherwise. Error dialogs
-  show the selected log path. Preserve existing log entries; logs are ignored.
+  show the selected log path. Configure logging without creating/opening a log
+  or making fallback directories; the first error lazily opens the first writable
+  destination. Successful runs leave existing log bytes and modification times
+  unchanged. Preserve existing log entries; logs are ignored.
 - Special characters such as `:`, `&`, and `$` are metadata text, passed directly
   to Python APIs. Windows filename restrictions still apply to selected paths.

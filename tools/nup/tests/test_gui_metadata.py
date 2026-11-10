@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from windows_gui import NupPackagerApp, configure_error_log
+from windows_gui import NupPackagerApp, configure_error_log, PREVIEW_SIZE
 from nup.application import load_application
 from nup.meta import serialize_block
 from nup.pack import pack
@@ -82,12 +82,16 @@ class GuiMetadataTests(unittest.TestCase):
         button = self.app.editor_transfer_button
         with patch("windows_gui.messagebox.askyesno", return_value=True), patch("windows_gui.messagebox.showinfo"), patch("windows_gui.messagebox.showerror") as error:
             button.invoke()
+            self.root.update_idletasks()
+            self.assertTrue(self.app.editor_progress.winfo_ismapped())
             deadline = time.monotonic() + 5
             while self.app.busy and time.monotonic() < deadline:
                 self.root.update()
                 time.sleep(0.01)
             self.assertFalse(self.app.busy)
             error.assert_not_called()
+        self.assertFalse(self.app.editor_progress.winfo_ismapped())
+        self.assertFalse(self.app.error_log_path.exists())
         self.assertEqual(load_application(target).icon, icon)
         self.assertEqual(self.app.title_name.get(), "Title: café & $ 日本語")
         self.assertIsNotNone(self.app.icon_image_ref)
@@ -133,12 +137,16 @@ class GuiMetadataTests(unittest.TestCase):
         self.assertGreater(self.app.editor_transfer_button.winfo_x(), self.app.editor_update_button.winfo_x())
         with patch("windows_gui.messagebox.askyesno", return_value=True), patch("windows_gui.messagebox.showinfo"), patch("windows_gui.messagebox.showerror") as error:
             self.app.editor_update_button.invoke()
+            self.root.update_idletasks()
+            self.assertTrue(self.app.editor_progress.winfo_ismapped())
             deadline = time.monotonic() + 10
             while self.app.busy and time.monotonic() < deadline:
                 self.root.update()
                 time.sleep(0.01)
             self.assertFalse(self.app.busy)
             error.assert_not_called()
+        self.assertFalse(self.app.editor_progress.winfo_ismapped())
+        self.assertFalse(self.app.error_log_path.exists())
         actual = load_application(original)
         self.assertEqual((actual.title, actual.publisher, actual.version), (value, value, "v1: & $"))
         self.app.mode.set("pack")
@@ -166,6 +174,7 @@ class GuiMetadataTests(unittest.TestCase):
             self.assertFalse(self.app.busy)
             error.assert_called_once()
         self.assertTrue(self.app.editor_frame.winfo_exists())
+        self.assertFalse(self.app.editor_progress.winfo_ismapped())
         log = self.app.error_log_path.read_text(encoding="utf-8")
         self.assertIn("Metadata operation", log)
         self.assertIn("Traceback", log)
@@ -189,5 +198,86 @@ class GuiMetadataTests(unittest.TestCase):
         for text in (str(original), str(target), "New: café & $ 日本語", "Publisher", "remain unchanged"):
             self.assertIn(text, summary)
         self.assertFalse(self.app.busy)
+        self.assertFalse(self.app.editor_progress.winfo_ismapped())
+        self.assertFalse(self.app.error_log_path.exists())
         self.assertEqual(original.read_bytes(), source_bytes)
         self.assertEqual(target.read_bytes(), target_bytes)
+
+    def test_preview_boxes_stay_square_and_progress_bars_match(self):
+        from PIL import Image
+        artwork = self.work / "wide.png"
+        Image.new("RGB", (400, 100), "blue").save(artwork)
+        original = self.work / "artwork.nup"
+        pack(str(original), str(self.source))
+        replace_metadata(original, [serialize_block({3: artwork.read_bytes(), 5: b"Title"})])
+        self.app.icon.set(str(artwork))
+        self.root.geometry("900x510")
+        self.app.start_progress(self.app.progress)
+        self.root.update()
+        pack_dimensions = (self.app.icon_preview_box.winfo_width(), self.app.icon_preview_box.winfo_height())
+        progress_dimensions = (self.app.progress.winfo_width(), self.app.progress.winfo_height())
+        self.app.stop_progress(self.app.progress)
+        self.app.copy_nup_button.invoke()
+        self.app.editor_source.set(str(original))
+        self.app.start_progress(self.app.editor_progress)
+        self.root.update()
+        self.assertEqual(pack_dimensions, (PREVIEW_SIZE, PREVIEW_SIZE))
+        self.assertEqual((self.app.editor_preview_box.winfo_width(), self.app.editor_preview_box.winfo_height()), pack_dimensions)
+        self.assertEqual((self.app.editor_progress.winfo_width(), self.app.editor_progress.winfo_height()), progress_dimensions)
+        self.assertEqual(str(self.app.progress.cget("style")), str(self.app.editor_progress.cget("style")))
+        self.assertEqual(self.app.icon_image_ref.width(), self.app.editor_frame.preview_image.width())
+        self.assertEqual(self.app.icon_image_ref.height(), self.app.editor_frame.preview_image.height())
+        self.root.geometry("1000x600")
+        self.root.update()
+        self.assertEqual((self.app.editor_preview_box.winfo_width(), self.app.editor_preview_box.winfo_height()), pack_dimensions)
+        self.app.stop_progress(self.app.editor_progress)
+        self.assertFalse(self.app.error_log_path.exists())
+
+
+class ErrorLogTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.work = Path(self.temp.name)
+
+    def logger(self, folder):
+        logger, path = configure_error_log(folder)
+        def close():
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
+        self.addCleanup(close)
+        return logger, path
+
+    def test_no_file_or_directory_until_first_error(self):
+        logger, path = self.logger(self.work / "logs")
+        logger.info("Successful operation")
+        logger.warning("Not an error")
+        self.assertFalse(path.parent.exists())
+        logger.error("First error: & $ 日本語")
+        self.assertIn("First error: & $ 日本語", path.read_text(encoding="utf-8"))
+
+    def test_existing_log_bytes_and_timestamp_unchanged_without_errors(self):
+        path = self.work / "error.log"
+        path.write_text("Previous error\n", encoding="utf-8")
+        os.utime(path, (1000000000, 1000000000))
+        before = path.stat().st_mtime_ns
+        logger, _ = self.logger(self.work)
+        logger.info("Startup and successful work")
+        self.assertEqual(path.read_text(encoding="utf-8"), "Previous error\n")
+        self.assertEqual(path.stat().st_mtime_ns, before)
+        logger.error("Next error")
+        self.assertTrue(path.read_text(encoding="utf-8").startswith("Previous error\n"))
+        self.assertIn("Next error", path.read_text(encoding="utf-8"))
+
+    def test_fallback_is_created_only_when_primary_cannot_write_an_error(self):
+        blocker = self.work / "not-a-directory"
+        blocker.write_text("block", encoding="utf-8")
+        fallback = self.work / "user-data"
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(fallback)}):
+            logger, _ = self.logger(blocker)
+        self.assertFalse(fallback.exists())
+        logger.error("Fallback error")
+        destination = fallback / "NUP Packager" / "error.log"
+        self.assertIn("Fallback error", destination.read_text(encoding="utf-8"))
+        self.assertEqual(Path(logger.handlers[0].baseFilename), destination)

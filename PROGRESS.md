@@ -2,6 +2,27 @@
 
 This document records meaningful changes and enhancements made to `nup-gui` and its tooling.
 
+## 0.3.1 test build refresh (2026-11-10)
+
+- Error logging now opens lazily on the first error. Successful startup and
+  operations create no log file or fallback directories and leave existing
+  log bytes and modification times untouched. The active log path follows
+  the fallback destination when the application directory is unwritable.
+- Standardized both artwork previews to fixed 112×112 pixel squares with
+  the same aspect-preserving 96×96 maximum thumbnails. Replaced editor artwork
+  previews now update immediately using the same renderer as the packing page.
+- Unified progress-bar styling and start/stop behavior for packing, extraction,
+  source updates, and transfers. Metadata tasks show indeterminate progress
+  during editing and verification and clear it on either success or failure;
+  cancelled confirmations do not start progress.
+- Validation: all 27 tests passed under Linux/Xvfb and Windows Python/Wine64,
+  including lazy/fallback logging, untouched existing log timestamps, matching
+  preview/progress dimensions, resizing, and metadata progress lifecycle.
+  The rebuilt executable passed the Windows-message-loop smoke test and left
+  its error.log unchanged. Rebuilt ZIP integrity and single-EXE contents passed.
+- Reviewed DLC representation: SPEC.md defines DLC as an addon package with
+  its own title ID; no separate DLC application-metadata field exists.
+
 ## 0.3.1 GUI test build (2026-11-10)
 
 - Moved existing metadata editing to the third radio option in the main window,

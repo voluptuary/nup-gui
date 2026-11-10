@@ -21,6 +21,9 @@ from nup.icons import image_extension, is_supported_image
 from nup.operations import pack_atomic, unpack_atomic
 
 
+PREVIEW_SIZE = 112
+ARTWORK_SIZE = 96
+
 ICON_RELATIVE_PATH = Path("assets") / "NUP_GUI_Packager.ico"
 
 
@@ -31,33 +34,45 @@ def resource_path(relative_path: Path) -> Path:
     return Path(__file__).resolve().parent / "launcher" / relative_path
 
 
+class ErrorLogHandler(logging.FileHandler):
+    """Open the first writable destination only when an error is emitted."""
+    def __init__(self, paths: list[Path]) -> None:
+        self.paths = paths
+        super().__init__(paths[0], mode="a", encoding="utf-8", delay=True)
+
+    def _open(self):
+        for path in self.paths:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                stream = path.open(self.mode, encoding=self.encoding, errors=self.errors)
+            except OSError:
+                continue
+            self.baseFilename = str(path.resolve())
+            return stream
+        raise OSError("Cannot write error.log beside the application or in user storage")
+
+
 def configure_error_log(folder: Path | None = None) -> tuple[logging.Logger, Path]:
-    """Append UTF-8 diagnostics beside the executable, falling back to user storage."""
+    """Configure error-only logging without creating or touching any files."""
     folder = folder or (Path(sys.executable).parent if getattr(sys, "frozen", False) else Path.cwd())
-    candidates = [folder / "error.log",
-                  Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "state")) / "NUP Packager" / "error.log"]
-    for path in candidates:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            handler = logging.FileHandler(path, mode="a", encoding="utf-8")
-        except OSError:
-            continue
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(threadName)s] %(message)s"))
-        logger = logging.getLogger(f"nup.gui.{path}")
-        for previous in logger.handlers[:]:
-            previous.close()
-            logger.removeHandler(previous)
-        logger.addHandler(handler)
-        logger.setLevel(logging.ERROR)
-        logger.propagate = False
-        return logger, path
-    raise OSError("Cannot create error.log beside the application or in user storage")
+    paths = [folder / "error.log",
+             Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "state")) / "NUP Packager" / "error.log"]
+    handler = ErrorLogHandler(paths)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(threadName)s] %(message)s"))
+    logger = logging.getLogger(f"nup.gui.{paths[0]}")
+    for previous in logger.handlers[:]:
+        previous.close()
+        logger.removeHandler(previous)
+    logger.addHandler(handler)
+    logger.setLevel(logging.ERROR)
+    logger.propagate = False
+    return logger, paths[0]
 
 
 class NupPackagerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.error_logger, self.error_log_path = configure_error_log()
+        self.error_logger, self._error_log_path = configure_error_log()
         root.report_callback_exception = self.report_callback_exception
         self.editor_frame = None
         self.events: queue.Queue[tuple[str, str, str, str]] = queue.Queue()
@@ -133,9 +148,8 @@ class NupPackagerApp:
         self.publisher_entry = self.bind_entry(ttk.Entry(root, textvariable=self.publisher, width=45))
         self.publisher_entry.grid(row=5, column=1, sticky="ew", padx=8, pady=8)
 
-        # Icon preview spanning rows 3 to 5 in column 2 (to the right of title, version, publisher entries)
-        self.icon_preview_label = ttk.Label(root, text="No artwork", anchor="center", relief="groove", width=16)
-        self.icon_preview_label.grid(row=3, column=2, rowspan=3, sticky="nsew", padx=8, pady=4)
+        self.icon_preview_box, self.icon_preview_label = self.make_icon_preview(root)
+        self.icon_preview_box.grid(row=3, column=2, rowspan=3, padx=8, pady=4)
 
         self.icon_label = ttk.Label(root, text="Icon file (optional)")
         self.icon_label.grid(row=6, column=0, sticky="w", padx=8, pady=8)
@@ -157,7 +171,7 @@ class NupPackagerApp:
         self.status_label.grid(
             row=8, column=0, columnspan=3, sticky="w", padx=8, pady=(10, 4)
         )
-        self.progress = ttk.Progressbar(root, mode="indeterminate", maximum=100)
+        self.progress = self.make_progressbar(root)
         self.progress.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=5)
         self.progress.grid_remove()
 
@@ -173,6 +187,37 @@ class NupPackagerApp:
                              if widget.winfo_manager() == "grid" and int(widget.grid_info()["row"]) > 0]
         self.update_mode()
         self.poll_after_id = self.root.after(100, self.drain_events)
+
+    @property
+    def error_log_path(self) -> Path:
+        for handler in self.error_logger.handlers:
+            if isinstance(handler, ErrorLogHandler):
+                return Path(handler.baseFilename)
+        return self._error_log_path
+
+    def make_icon_preview(self, parent) -> tuple[ttk.Frame, ttk.Label]:
+        box = ttk.Frame(parent, width=PREVIEW_SIZE, height=PREVIEW_SIZE)
+        box.grid_propagate(False)
+        label = ttk.Label(box, text="No artwork", anchor="center", relief="groove")
+        label.place(x=0, y=0, relwidth=1, relheight=1)
+        return box, label
+
+    def make_progressbar(self, parent) -> ttk.Progressbar:
+        style = ttk.Style(self.root)
+        style.configure("Nup.Horizontal.TProgressbar", thickness=16)
+        return ttk.Progressbar(parent, style="Nup.Horizontal.TProgressbar",
+                               orient="horizontal", mode="indeterminate", maximum=100)
+
+    def start_progress(self, progress: ttk.Progressbar) -> None:
+        progress.stop()
+        progress.configure(mode="indeterminate", maximum=100, value=0)
+        progress.grid()
+        progress.start(12)
+
+    def stop_progress(self, progress: ttk.Progressbar) -> None:
+        progress.stop()
+        progress.configure(value=0)
+        progress.grid_remove()
 
     def show_error(self, title: str, message: str, **options) -> None:
         self.error_logger.error("%s: %s", title, message, exc_info=sys.exc_info()[0] is not None)
@@ -200,21 +245,23 @@ class NupPackagerApp:
         entry.bind("<Button-2>", show_menu)
         return entry
 
-    def update_icon_preview(self) -> None:
-        icon_path = self.icon.get().strip()
+    def render_icon_preview(self, icon_path: str, label: ttk.Label):
         if not icon_path or not os.path.isfile(icon_path):
-            self.icon_preview_label.configure(image="", text="No artwork")
-            self.icon_image_ref = None
-            return
+            label.configure(image="", text="No artwork")
+            return None
         try:
             with Image.open(icon_path) as image:
-                image.thumbnail((96, 96), Image.Resampling.LANCZOS)
-                img = ImageTk.PhotoImage(image.convert("RGBA"), master=self.root)
-            self.icon_preview_label.configure(image=img, text="")
-            self.icon_image_ref = img
+                image.thumbnail((ARTWORK_SIZE, ARTWORK_SIZE), Image.Resampling.LANCZOS)
+                preview = ImageTk.PhotoImage(image.convert("RGBA"), master=self.root)
+            label.configure(image=preview, text="")
+            return preview
         except (OSError, ValueError, tk.TclError):
-            self.icon_preview_label.configure(image="", text="Cannot preview image")
-            self.icon_image_ref = None
+            self.error_logger.exception("Previewing artwork: %s", icon_path)
+            label.configure(image="", text="Cannot preview image")
+            return None
+
+    def update_icon_preview(self) -> None:
+        self.icon_image_ref = self.render_icon_preview(self.icon.get().strip(), self.icon_preview_label)
 
     def show_metadata(self, metadata: ApplicationMetadata) -> None:
         # Parse completely before changing any fields, so a failed import keeps
@@ -243,7 +290,7 @@ class NupPackagerApp:
             widget.grid()
         if self.mode.get() == "pack":
             for widget in (self.metadata_source_label, self.buttons_frame,
-                           self.icon_preview_label,
+                           self.icon_preview_box,
                            self.icon_label, self.icon_entry, self.icon_button,
                            self.title_label, self.title_entry,
                            self.version_label, self.version_entry,
@@ -266,7 +313,7 @@ class NupPackagerApp:
             self.status.set("Choose a dump folder to package.")
         else:
             for widget in (self.metadata_source_label, self.buttons_frame,
-                           self.icon_preview_label,
+                           self.icon_preview_box,
                            self.icon_label, self.icon_entry, self.icon_button,
                            self.title_label, self.title_entry,
                            self.version_label, self.version_entry,
@@ -388,13 +435,19 @@ class NupPackagerApp:
 
         ttk.Button(dlg, text="Browse...", command=browse_edit_icon).grid(
             row=6, column=2, sticky="ew", padx=8, pady=7)
-        preview_icon = ttk.Label(dlg, text="No artwork", anchor="center", relief="groove", width=14)
-        preview_icon.grid(row=3, column=2, rowspan=3, sticky="nsew", padx=8, pady=6)
+        self.editor_preview_box, preview_icon = self.make_icon_preview(dlg)
+        self.editor_preview_box.grid(row=3, column=2, rowspan=3, padx=8, pady=4)
         preview_text = tk.StringVar(value="Metadata preview")
         ttk.Label(dlg, textvariable=preview_text, wraplength=720).grid(
             row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=(5, 8))
         ttk.Label(dlg, textvariable=status_v, wraplength=720).grid(
             row=7, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 5))
+
+        def refresh_icon(*_args) -> None:
+            dlg.preview_image = self.render_icon_preview(icon_var.get().strip(), preview_icon)
+
+        icon_var.trace_add("write", refresh_icon)
+        refresh_icon()
 
         def show_dialog_metadata(metadata: ApplicationMetadata) -> None:
             title_var.set(metadata.title)
@@ -406,14 +459,6 @@ class NupPackagerApp:
                 Path(icon_path).write_bytes(metadata.icon)
             icon_var.set(icon_path)
             preview_text.set(f"Title: {metadata.title or '—'}  |  Publisher: {metadata.publisher or '—'}  |  Version: {metadata.version or '—'}")
-            if metadata.icon:
-                import io
-                with Image.open(io.BytesIO(metadata.icon)) as image:
-                    image.thumbnail((88, 88), Image.Resampling.LANCZOS)
-                    dlg.preview_image = ImageTk.PhotoImage(image.convert("RGBA"), master=dlg)
-                preview_icon.configure(image=dlg.preview_image, text="")
-            else:
-                preview_icon.configure(image="", text="No artwork")
 
         def refresh_fields(*_args) -> None:
             selected = src_var.get().strip() or dst_var.get().strip()
@@ -431,8 +476,11 @@ class NupPackagerApp:
         copying = False
         edit_fields = (src_entry, dst_entry, title_entry, version_entry,
                        publisher_entry, icon_entry)
+        self.editor_progress = self.make_progressbar(dlg)
+        self.editor_progress.grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=5)
+        self.editor_progress.grid_remove()
         actions_frame = ttk.Frame(dlg)
-        actions_frame.grid(row=8, column=0, columnspan=3, sticky="e", padx=10, pady=10)
+        actions_frame.grid(row=9, column=0, columnspan=3, sticky="e", padx=10, pady=10)
         update_source_button = ttk.Button(actions_frame, text="Update source")
         edit_button = ttk.Button(actions_frame, text="Transfer metadata")
         edit_button.pack(side=tk.RIGHT)
@@ -511,6 +559,7 @@ class NupPackagerApp:
             for widget in (*edit_fields, *self.editor_buttons):
                 widget.configure(state="disabled")
             status_v.set("Updating source metadata and verifying the package…")
+            self.start_progress(self.editor_progress)
             results = queue.Queue()
 
             def work() -> None:
@@ -530,6 +579,7 @@ class NupPackagerApp:
                 except queue.Empty:
                     dlg.after(100, completed_source_update)
                     return
+                self.stop_progress(self.editor_progress)
                 copying = False
                 self.busy = False
                 self._set_controls_enabled(True)
@@ -605,6 +655,7 @@ class NupPackagerApp:
             for widget in (*edit_fields, *self.editor_buttons):
                 widget.configure(state="disabled")
             status_v.set("Editing metadata and verifying the target package…")
+            self.start_progress(self.editor_progress)
             results = queue.Queue()
 
 
@@ -636,6 +687,7 @@ class NupPackagerApp:
                 except queue.Empty:
                     dlg.after(100, completed)
                     return
+                self.stop_progress(self.editor_progress)
                 copying = False
                 self.busy = False
                 self._set_controls_enabled(True)
@@ -786,9 +838,8 @@ class NupPackagerApp:
         self.cancel_button.configure(text="Cancel", state="normal")
         self.cancel_button.grid()
         self.status.set("Scanning dump contents..." if mode == "pack" else "Reading NUP package...")
-        self.progress.configure(mode="indeterminate")
-        self.progress.grid()
-        self.progress.start(12)
+        self.progress_mode = "indeterminate"
+        self.start_progress(self.progress)
         threading.Thread(
             target=self.operation_worker,
             args=(mode, source, output, self.cancel_event,
@@ -889,8 +940,7 @@ class NupPackagerApp:
             pass
 
     def finish_operation(self) -> None:
-        self.progress.stop()
-        self.progress.grid_remove()
+        self.stop_progress(self.progress)
         self.progress_mode = "indeterminate"
         self.busy = False
         self.cancel_event = None
