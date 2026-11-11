@@ -287,6 +287,27 @@ class AdversarialTests(unittest.TestCase):
         self.assertGreater(accepted, 0)
         self.assertGreater(rejected, 0)
 
+    def test_unpack_accepts_zstd_window_larger_than_256_kib(self):
+        import zstandard
+        from nup.operations import unpack_atomic
+
+        # A frame larger than the copy buffer forces streaming decompression.
+        payload = b'compress me\n' * 500000
+        (self.source / 'base/romfs/asset.bin').write_bytes(payload)
+        package = self.work / 'compressed.nup'
+        pack(str(package), str(self.source))
+        with NupReader(str(package)) as reader:
+            _, _, _, offset, _, codec = reader.file_info(0)
+        self.assertEqual(codec, F.CODEC_ZSTD)
+        with package.open('rb') as stream:
+            stream.seek(offset)
+            frame = zstandard.get_frame_parameters(stream.read(18))
+        self.assertGreater(frame.window_size, 256 << 10)
+
+        output = self.work / 'unpacked'
+        unpack_atomic(str(package), str(output))
+        self.assertEqual((output / 'base/romfs/asset.bin').read_bytes(), payload)
+
     def test_large_zstd_window_is_rejected_before_decoder_allocation(self):
         import zstandard
         (self.source / 'base/romfs/asset.bin').write_bytes(b'z' * 100000)

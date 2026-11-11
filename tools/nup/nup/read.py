@@ -374,7 +374,9 @@ class NupReader:
                     raise F.NupError(f"Zstandard frame size does not match file size for {name!r}")
                 if frame.window_size > MAX_ZSTD_WINDOW:
                     raise F.NupError("Zstandard frame exceeds the 256 MiB decoder window limit")
-                with zstandard.ZstdDecompressor(max_window_size=MAX_ZSTD_WINDOW // 1024).stream_reader(
+                # python-zstandard passes this value to libzstd in bytes.
+                decompressor = zstandard.ZstdDecompressor(max_window_size=MAX_ZSTD_WINDOW)
+                with decompressor.stream_reader(
                     source, read_size=4 << 20, closefd=False,
                 ) as decompressed:
                     while True:

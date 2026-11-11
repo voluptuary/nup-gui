@@ -2,6 +2,23 @@
 
 This document records meaningful changes and enhancements made to `nup-gui` and its tooling.
 
+## 0.4.0 extraction regression and Codespace diagnosis (2026-11-11)
+
+- Fixed the Zstandard decoder window units. The streaming decoder received
+  256 KiB where the reader intended 256 MiB, so larger valid frames could
+  fail with "Frame requires too much memory for decoding." A 6 MB synthetic
+  file reproduced the reported error through the GUI's unpack operation and
+  extracted byte-for-byte after the fix. All 74 Linux/Xvfb tests passed.
+  Windows Python under Wine passed 71 tests with three capability skips.
+  Rebuilt the Windows x64 executable and single-executable ZIP. The executable
+  passed the Windows message-loop smoke test and the ZIP passed integrity checks.
+- Built the `bad-devcontainer/` Dockerfile from a cold cache and started an
+  isolated workspace with the same configuration using Dev Container CLI
+  0.83.3. The image took about six minutes to build and load, with most of the
+  time in image layer extraction and export. Post-create completed as
+  `vscode` in about 17 seconds. The available Codespaces log begins with the
+  universal fallback image, so the original hosted failure remains unknown.
+
 ## 0.3.1 adversarial audit and compatibility validation (2026-11-10)
 
 - Completed the source/build/CI audit; [AUDIT.md](AUDIT.md) records 16 finding
@@ -116,8 +133,7 @@ This document records meaningful changes and enhancements made to `nup-gui` and 
   apt/pip waits and the existing Yarn source repair.
 - Confirmed branch `gui` tracks `origin/gui` at `voluptuary/nup-gui`.
   Removed the additional upstream remote and explicitly selected origin for
-  pushes. No merkin-agent references were found in working files or Git
-  remote settings. All subsequent repository work targets voluptuary/nup-gui.
+  pushes. All subsequent repository work targets voluptuary/nup-gui.
 - Read AGENTS.md and the existing recovery history before making changes.
 - Removed Wine32 and the i386 architecture setup from the restored image;
   the build uses extracted Windows x64 Python with a win64 prefix. Updated

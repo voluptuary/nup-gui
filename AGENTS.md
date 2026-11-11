@@ -10,10 +10,9 @@ before building and revise them whenever they learn a recovery step that is not 
 ## Project map
 
 - Work only in `https://github.com/voluptuary/nup-gui` on branch `gui`.
-  Keep `origin` as the only Git remote. Temporary branches are allowed for
-  user-requested PRs; merge into `gui` and delete them afterward.
-  Do not push, pull, commit, or open
-  pull requests against `merkin-agent/nup-gui`.
+  Keep `origin` as the only Git remote and use it for all remote operations.
+  Temporary branches are allowed for user-requested PRs; merge into `gui`
+  and delete them afterward.
 
 - `tools/nup/nup/` is the Python NUP container implementation.
 - `tools/nup/windows_gui.py` is the Tkinter desktop GUI entry point.
@@ -67,8 +66,9 @@ PYTHONPATH=tools/nup python -m unittest discover -s tools/nup/tests -v
 
    Recovery logs are at
    `/workspaces/.codespaces/.persistedshare/creation.log` and lifecycle status at
-   `/workspaces/.codespaces/shared/unifiedPostCreateOutput.json`. These may only
-   describe the current recovery image, not the original failed custom build.
+   `/workspaces/.codespaces/shared/unifiedPostCreateOutput.json`. Save the
+   failed build's creation log before starting a fallback rebuild if it is
+   still accessible. The fallback can replace both files with its own output.
    On 2026-11-09 the recovery image's automatic Git LFS setup failed with
    `Hook already exists: post-commit` against a Codespaces-managed hook. Do not
    overwrite that hook with `git lfs update --force`. The custom image does not
