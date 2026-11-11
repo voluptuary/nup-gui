@@ -18,6 +18,9 @@ This document records meaningful changes and enhancements made to `nup-gui` and 
   time in image layer extraction and export. Post-create completed as
   `vscode` in about 17 seconds. The available Codespaces log begins with the
   universal fallback image, so the original hosted failure remains unknown.
+- Published v0.4.1 with the verified Windows ZIP. Restored the tested
+  configuration to `.devcontainer/` after publishing, ready for a live
+  Codespace rebuild.
 
 ## 0.3.1 adversarial audit and compatibility validation (2026-11-10)
 

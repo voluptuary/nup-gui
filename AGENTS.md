@@ -48,6 +48,9 @@ PYTHONPATH=tools/nup python -m unittest discover -s tools/nup/tests -v
    be named exactly `Dockerfile` because `devcontainer.json` refers to that
    path. A backup folder such as `bad-devcontainer/` is not discovered by
    Codespaces.
+   The restored configuration passed a cold Docker build and an isolated
+   Dev Container CLI startup on 2026-11-11. A live Codespace rebuild is
+   required to verify the hosted startup.
    The upstream Python image's unused `/etc/apt/sources.list.d/yarn.list`
    caused a reproduced build failure: `NO_PUBKEY 62D54FD4003F6525` and apt
    exit 100. Keep its removal before `apt-get update`; NUP does not use Yarn.
