@@ -239,11 +239,11 @@ def _write_meta_blocks(
         if pkg.preserved_meta is not None:
             block = pkg.preserved_meta
             if i == app_pkg_idx and (names or icons or display_version is not None or publisher is not None):
-                records = M.parse_block(block)
-                overrides = M.parse_block(app_extra)
+                records = M.parse_block(block, normalize=False)
+                overrides = M.parse_block(app_extra, normalize=False)
                 records.update({t: payload for t, payload in overrides.items()
                                 if t != F.TLV_SOURCE_DUMP})
-                block = M.update_block(block, records)
+                block = M.update_block(block, records, shifted=False)
         else:
             block = M.meta_block(pkg, dump_label, app_extra if i == app_pkg_idx else b"")
         mo = blob_cursor  # == out.tell(); extents were appended sequentially
@@ -376,9 +376,10 @@ def pack(
     # Honor an explicit path first; otherwise discover common artwork sidecars
     # and images in the package/control trees.
     icons = dict(icons or {})
+    interpreted = M.package_records([p.preserved_meta or b"" for p in packages])
     preserved_has_icon = any(
-        any(t in M.parse_block(p["raw_block"]) for t in (F.TLV_ICON, F.TLV_LOCALIZED_ICONS))
-        for p in preserved.get("packages", []))
+        F.TLV_ICON in records or F.TLV_LOCALIZED_ICONS in records
+        for records, _ in interpreted)
     if None not in icons and not preserved_has_icon:
         detected = detect_icon(src, [pkg.src for pkg in packages])
         if detected is not None:
@@ -386,6 +387,17 @@ def pack(
     for icon_path in icons.values():
         if not is_supported_image(icon_path):
             raise SystemExit(f"pack: unsupported or unreadable icon image: {icon_path!r}")
+
+    # Applying overrides or changing package membership can add canonical
+    # records or separate a shifted block from its numbering marker. Plan
+    # the migration while the original sidecar blocks are still together.
+    mixed_layouts = any(shifted for _, shifted in interpreted) and any(
+        records and not shifted for records, shifted in interpreted)
+    if (split or names or icons or display_version is not None or publisher is not None
+            or mixed_layouts or any(p.preserved_meta is None for p in packages)):
+        for pkg, (records, shifted) in zip(packages, interpreted):
+            if shifted and pkg.preserved_meta is not None:
+                pkg.preserved_meta = M.update_block(pkg.preserved_meta, records, shifted=True)
 
     if split:
         groups = _split_groups(out_path, packages)

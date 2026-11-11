@@ -17,6 +17,7 @@ from PIL import Image, ImageTk
 
 from nup.application import ApplicationMetadata, copy_application, dump_application, load_application
 from nup.errors import OperationCancelled
+from nup.format import NupError
 from nup.icons import image_extension, is_supported_image
 from nup.operations import pack_atomic, unpack_atomic
 
@@ -579,10 +580,22 @@ class NupPackagerApp:
             self.start_progress(self.editor_progress)
             results = queue.Queue()
 
+            def validate_source_update(staged: str) -> None:
+                metadata = load_application(staged)
+                for label, actual, expected, clear in (
+                    ("title", metadata.title, title, "clear_name"),
+                    ("display version", metadata.version, version, "clear_display_version"),
+                    ("publisher", metadata.publisher, publisher, "clear_publisher"),
+                    ("icon", metadata.icon, icon_bytes, "clear_icon"),
+                ):
+                    # Clearing a default may expose a localized or NACP fallback.
+                    if not overrides.get(clear) and actual != expected:
+                        raise NupError(f"Source {label} verification failed before replacing original")
+
             def work() -> None:
                 try:
                     from nup.edit import edit
-                    edit(source_path, **overrides)
+                    edit(source_path, validate=validate_source_update, **overrides)
                     metadata = load_application(source_path)
                     results.put((metadata, None))
                 except (Exception, SystemExit) as exc:

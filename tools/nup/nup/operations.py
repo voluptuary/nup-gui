@@ -59,6 +59,8 @@ def pack_atomic(
              names={None: name} if name else None,
              display_version=display_version or None, publisher=publisher or None,
              progress=progress, cancel=cancel)
+        with NupReader(staged, cancel=cancel):
+            pass
         if cancel is not None and cancel():
             raise OperationCancelled("operation cancelled")
         _require_missing(target)

@@ -19,7 +19,8 @@ before building and revise them whenever they learn a recovery step that is not 
 - `tools/nup/build_windows.ps1` is the native Windows build script.
 - `tools/nup/build_wine.sh` builds the Windows executable from Linux using
   Windows Python and PyInstaller under Wine.
-- `.devcontainer/` defines the Codespace Python and Wine build environment.
+- Use the default GitHub Codespaces image and the terminal setup below.
+  The former custom configuration is available in Git at `73ab130:.devcontainer/`.
 - `dist/nup-gui.exe` and `dist/nup-gui-windows-x64.zip` are generated build
   outputs. The dist directory is ignored for new files, but these two release
   artifacts are currently tracked; rebuilding modifies them. Rebuild them when
@@ -32,94 +33,131 @@ root with:
 PYTHONPATH=tools/nup python -m unittest discover -s tools/nup/tests -v
 ```
 
-## Cold-start or recover a damaged Codespace
+## Set up a Codespace without a custom devcontainer
 
-1. Reopen the repository Codespace and check `git status`, the current branch,
-   and recent commits before changing files. A deleted or corrupted workspace
-   can contain uncommitted work that Git cannot recover; inspect available
-   branches and remotes before assuming a file was never present.
-2. If `.devcontainer/` is missing or damaged, recover any committed version
-   first, for example with `git show <commit>:.devcontainer/Dockerfile` and
-   `git show <commit>:.devcontainer/devcontainer.json`. The repository's
-   devcontainer installs Python 3.12, 64-bit Wine, and
-   Xvfb for headless Windows builds. After restoring it, use **Codespaces:
-   Rebuild Container** so the Dockerfile and `postCreateCommand` run. The
-   active configuration must be in `.devcontainer/`, and the Dockerfile must
-   be named exactly `Dockerfile` because `devcontainer.json` refers to that
-   path. A backup folder such as `bad-devcontainer/` is not discovered by
-   Codespaces.
-   The restored configuration passed a cold Docker build and an isolated
-   Dev Container CLI startup on 2026-11-11. A live Codespace rebuild is
-   required to verify the hosted startup.
-   The upstream Python image's unused `/etc/apt/sources.list.d/yarn.list`
-   caused a reproduced build failure: `NO_PUBKEY 62D54FD4003F6525` and apt
-   exit 100. Keep its removal before `apt-get update`; NUP does not use Yarn.
-   Never bypass apt signature checks to work around this failure.
-   System packages are installed only in the Dockerfile. Do not add apt,
-   Windows Python installation, or Wine initialization to lifecycle commands.
-   `.devcontainer/post-create.sh` upgrades pip/setuptools before installing the
-   editable Python package, sharing a three-minute limit and bounded pip network retries. The Dockerfile bounds
-   apt network waits and retries; a cold Wine image build still needs
-   time to download and unpack packages. Wine32 and i386 are not required:
-   the complete executable build and GUI smoke test pass with Wine64 alone.
-   A fresh Wine 8 prefix can warn about missing syswow64/rundll32.exe during
-   initialization; this warning did not prevent the x64 build or smoke test.
-   Inspect the creation log to distinguish
-   active build progress from a stalled lifecycle command.
-
-   Recovery logs are at
-   `/workspaces/.codespaces/.persistedshare/creation.log` and lifecycle status at
-   `/workspaces/.codespaces/shared/unifiedPostCreateOutput.json`. Save the
-   failed build's creation log before starting a fallback rebuild if it is
-   still accessible. The fallback can replace both files with its own output.
-   On 2026-11-09 the recovery image's automatic Git LFS setup failed with
-   `Hook already exists: post-commit` against a Codespaces-managed hook. Do not
-   overwrite that hook with `git lfs update --force`. The custom image does not
-   request the Git LFS feature; this repository currently has no LFS attributes.
-   If this error recurs in a default/recovery image, preserve the hook and
-   inspect the feature configuration before retrying lifecycle commands.
-
-   Validate changes before rebuilding the live Codespace:
+1. Open the Codespace for `voluptuary/nup-gui` on branch `gui`. From the
+   repository root run `git status --short --branch`, `git remote -v`, and
+   `git log -5 --oneline`. Read `PROGRESS.md` for the build and recovery
+   history. Preserve uncommitted work before switching or replacing a Codespace.
+2. Use **Default configuration** when creating a Codespace. A new Codespace
+   uses the selected branch's committed files, so check whether that revision
+   still contains an active `.devcontainer/devcontainer.json` or root
+   `.devcontainer.json` before creating it. Select **Default configuration**
+   explicitly if GitHub offers a choice. For future Codespaces to pick the
+   default automatically, the branch must have the active configuration
+   removed in Git. If an existing Codespace opens in recovery mode and
+   its terminal works, use the same manual setup below.
+   If the terminal is unusable, save accessible work and logs, then open a
+   Codespace with the default configuration.
+   [GitHub Codespaces default configuration](https://docs.github.com/en/codespaces/setting-up-your-project-for-codespaces/adding-a-dev-container-configuration/introduction-to-dev-containers#using-the-default-dev-container-configuration)
+3. Check `node --version` and `npm --version` in the Codespace terminal.
+   The default image supplies both. If they are missing from PATH, open a
+   fresh Bash terminal. If needed, load the preinstalled nvm and select an
+   installed version.
 
    ```sh
-   docker build --progress=plain -t nup-devcontainer-check .devcontainer
-   docker run --rm --init --user vscode -v "$PWD:/workspace" -w /workspace \
-     nup-devcontainer-check bash .devcontainer/post-create.sh
+   export NVM_DIR="${NVM_DIR:-/usr/local/share/nvm}"
+   . "$NVM_DIR/nvm.sh"
+   nvm use default
+   node --version
+   npm --version
    ```
 
-3. If the devcontainer cannot be rebuilt, bootstrap the host environment on
-   Ubuntu/Debian with:
+   If nvm has no usable Node version, run `nvm install --lts`. If
+   `nvm.sh` is absent, use the official nvm installation instructions, then
+   install an LTS release. Node is a workspace tool. NUP itself has no Node
+   package setup. For editor tooling, install **Python** (`ms-python.python`)
+   and **Pylance** (`ms-python.vscode-pylance`) in the Codespace's VS Code
+   Extensions view if needed.
+   [nvm installation and usage](https://github.com/nvm-sh/nvm#installing-and-updating)
+4. Install the Linux system dependencies from the terminal. These commands
+   target the default Ubuntu Codespace and also work on Debian with a
+   distribution Python of at least 3.11.
 
    ```sh
-   sudo apt-get update
-   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-     ca-certificates curl git unzip file wine wine64 xvfb xauth msitools
-   python3 -m pip install --user -e ./tools/nup
+   sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+   sudo DEBIAN_FRONTEND=noninteractive apt-get \
+     -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+     install -y --no-install-recommends \
+     ca-certificates curl git unzip file python3 python3-venv python3-tk \
+     wine wine64 xvfb xauth msitools
    ```
 
-   Wine needs a 64-bit prefix for the Windows Python installer. If the default
-   `~/.cache/nup-wine` was created as 32-bit, leave it intact and select a new
-   prefix for the build, such as `~/.cache/nup-wine64`.
-4. Build from the repository root:
+   Wine64 is sufficient for the Windows x64 build. If apt reports
+   `NO_PUBKEY 62D54FD4003F6525` from the old Python image's Yarn repository,
+   confirm that `/etc/apt/sources.list.d/yarn.list` is the failing source.
+   If Yarn is unused, rename that file to `yarn.list.disabled` and retry
+   `apt-get update`. Keep apt signature verification enabled.
+   On Ubuntu 24.04, check the x64 Wine loader with
+   `/usr/lib/wine/wine64 --version` and the MSI extractor with
+   `msiextract --version`.
+5. From the repository root, create a virtual environment with the system
+   interpreter so it picks up the matching `python3-tk`. The Codespace's
+   PATH may select a different Python. Ubuntu 24.04 supplies Python 3.12
+   at `/usr/bin/python3`.
 
    ```sh
-   WINEPREFIX="$HOME/.cache/nup-wine64" tools/nup/build_wine.sh
+   /usr/bin/python3 --version
+   /usr/bin/python3 -m venv "$HOME/.venvs/nup-gui"
+   . "$HOME/.venvs/nup-gui/bin/activate"
+   python -m pip install --no-input --timeout 30 --retries 2 \
+     --upgrade "pip>=26.2" "setuptools>=84.1"
+   python -m pip install --no-input --timeout 30 --retries 2 -e ./tools/nup
+   python -m pip check
+   nup --help
    ```
 
-   The build script downloads the official Python 3.12.10 x64 `core`, `exe`,
-   `lib`, and `tcltk` MSI components and extracts them on Linux with
-   `msiextract` (msitools). It does not execute the MSI installer under Wine.
-   It configures a Windows 10 prefix, disables the optional `_wmi` module
-   in the temporary build runtime (Wine 8 lacks VariantToString), and patches
-   CopyFile2 only while installing dependencies. It runs headlessly under
-   `xvfb-run` with `WINEDLLOVERRIDES="mscoree,mshtml="`. Windows executable
-   builds are explicit actions and must not run during Codespace creation.
+   In a new shell, reactivate the environment with
+   `. "$HOME/.venvs/nup-gui/bin/activate"`. In VS Code, select
+   `~/.venvs/nup-gui/bin/python` with **Python: Select Interpreter**. Repeat
+   the terminal setup after replacing the Codespace or rebuilding an image
+   that no longer has the manual installs.
+6. Verify Tk and the Python dependencies, then run the full suite with a
+   display.
 
-Source installs require Python 3.11+ because the patched Pillow 13 dependency
-no longer supports 3.10. Runtime dependencies are Zstandard and Pillow 13+;
-build isolation requires setuptools 84.1+. Lifecycle/build scripts upgrade pip
-to 26.2+ and setuptools to 84.1+ before installing project dependencies. Both
-Windows builds require PyInstaller 6.22.3+.
+   ```sh
+   xvfb-run -a python -c 'import tkinter, nup, PIL, zstandard; root = tkinter.Tk(); root.destroy()'
+   PYTHONPATH=tools/nup xvfb-run -a python -m unittest discover -s tools/nup/tests -v
+   ```
+
+For a startup failure, save
+`/workspaces/.codespaces/.persistedshare/creation.log` and
+`/workspaces/.codespaces/shared/unifiedPostCreateOutput.json` if present.
+A fallback rebuild can replace both. If the default image's Git LFS setup
+reports `Hook already exists: post-commit`, preserve the Codespaces-managed
+hook. Inspect the creation log and feature configuration before retrying.
+This repository has no LFS attributes.
+
+## Build the Windows executable from the terminal
+
+Build explicitly from the repository root when a Windows artifact is needed.
+Run on an x86-64 Linux Codespace. The first build initializes the 64-bit
+Wine prefix and downloads the Windows build dependencies.
+
+```sh
+WINEPREFIX="$HOME/.cache/nup-wine64" tools/nup/build_wine.sh
+```
+
+Use a fresh prefix if an existing prefix was created as 32-bit. Leave the old
+prefix intact. Wine 8 and 9 can warn about a missing `syswow64/rundll32.exe`
+during 64-bit prefix initialization. The x64 build can proceed if the
+registry setup completes successfully.
+If Windows Python reports `init_sys_streams` with `[WinError 6] Invalid handle`
+when build output is redirected to a file, rerun the command directly in the
+terminal.
+
+The script downloads the official Windows Python 3.12.10 x64 `core`, `exe`,
+`lib`, and `tcltk` MSI components and extracts them on Linux with
+`msiextract` (msitools). It configures a Windows 10 prefix, removes the
+optional `_wmi` module from the temporary runtime to work around Wine 8's
+missing VariantToString, and patches CopyFile2 during dependency installation.
+It uses `xvfb-run` when no display is available and sets
+`WINEDLLOVERRIDES="mscoree,mshtml="`.
+
+Source installs require Python 3.11+, Zstandard and Pillow 13+. Build isolation
+requires setuptools 84.1+. The manual setup and Windows build scripts upgrade
+pip to 26.2+ and setuptools to 84.1+ before installing project dependencies.
+Both Windows builds require PyInstaller 6.22.3+.
 
 The Wine build cache defaults to `${XDG_CACHE_HOME:-$HOME/.cache}/nup-windows-build`.
 `NUP_WIN_BUILD_DIR` can select a different private directory. The script refuses
@@ -143,8 +181,24 @@ The Wine build writes:
 - `dist/nup-gui.exe` — Windows x64 GUI executable.
 - `dist/nup-gui-windows-x64.zip` — ZIP containing only `nup-gui.exe`.
 
-Check the output with `file dist/nup-gui.exe` and
-`unzip -l dist/nup-gui-windows-x64.zip`.
+Check the executable architecture and ZIP, then smoke-test the built GUI
+with the Windows Python and Wine prefix used by the build.
+
+```sh
+file dist/nup-gui.exe
+unzip -t dist/nup-gui-windows-x64.zip
+unzip -l dist/nup-gui-windows-x64.zip
+NUP_WIN_PYTHON="${NUP_WIN_BUILD_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/nup-windows-build}/python/python.exe"
+NUP_WINE_BIN=/usr/lib/wine/wine64
+if [ ! -x "$NUP_WINE_BIN" ]; then
+  NUP_WINE_BIN="$(command -v wine)"
+fi
+WINEARCH=win64 WINEPREFIX="$HOME/.cache/nup-wine64" WINEDEBUG=-all \
+  WINEDLLOVERRIDES="mscoree,mshtml=" xvfb-run -a "$NUP_WINE_BIN" \
+  "$NUP_WIN_PYTHON" tools/nup/smoke_gui.py dist/nup-gui.exe
+```
+
+Use your chosen `WINEPREFIX` here if it differs from the build example.
 
 The NUP application icon is stored in metadata TLV `0x0003`. Packing accepts
 explicit `-i/--icon` or detects common artwork and Switch `icon_*.dat` files;
@@ -167,8 +221,15 @@ warning rather than losing their package tree.
 
 - TLV IDs are the literal SPEC.md values, NPDM `0x0001` through localized
   icons `0x000A`, with source-package path `0x000B`. Never use zero-based IDs.
-  Readers recognize the earlier shifted layout when NPDM/icon/provenance bytes
-  identify it. Edits migrate recognized legacy types without losing payloads.
+  When editing, migrate recognized shifted metadata across the whole container.
+  BananaNative uses a type-zero marker in either the base or newest update to
+  choose the numbering for both. Check staged blocks against the intended
+  literal IDs and payloads before replacement. **Update source** also checks
+  the displayed values, allowing fallback metadata to surface when clearing a
+  default field.
+  Repacking a dump migrates shifted blocks before applying metadata overrides,
+  mixing layouts, adding packages, or splitting the container. An unmodified
+  round trip of a consistently numbered package set retains its raw blocks.
 - Extraction writes `.nup-metadata.json` at the dump root. Keep this file with
   the dump: it preserves raw per-package metadata blocks (including unknown
   and duplicate records), package IDs, versions, and flags for repacking.
@@ -193,6 +254,9 @@ warning rather than losing their package tree.
   A headless Linux run is not full GUI validation. Wine cannot create real
   symlinks in the current environment; two symlink tests skip there and run
   on Linux, while Windows reparse-attribute handling is tested separately.
+  Set `PYTHONPATH=tools/nup` when running the source suite with Windows Python
+  under Wine to select the current checkout. The Wine build runtime contains
+  an installed snapshot of NUP from its last executable build.
   For Docker checks use `docker run --init` so Xvfb receives startup signals;
   running xvfb-run itself as PID 1 can wait indefinitely for readiness.
   The Windows executable can be smoke-tested under Wine with

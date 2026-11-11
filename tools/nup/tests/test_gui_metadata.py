@@ -12,9 +12,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from windows_gui import NupPackagerApp, configure_error_log, PREVIEW_SIZE
 from nup.application import load_application
-from nup.meta import serialize_block
+from nup.meta import parse_block, serialize_block
 from nup.pack import pack
-from test_metadata import image_bytes, replace_metadata, relayout_package
+from test_metadata import image_bytes, replace_metadata, relayout_package, snapshot
 
 
 @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "GUI tests require Windows or Xvfb/display")
@@ -121,6 +121,36 @@ class GuiMetadataTests(unittest.TestCase):
             for widget in (self.app.source_entry, self.app.output_entry, self.app.action_button):
                 self.assertLessEqual(widget.winfo_y() + widget.winfo_height(), self.root.winfo_height())
                 self.assertLessEqual(widget.winfo_x() + widget.winfo_width(), self.root.winfo_width())
+
+    def test_update_source_fills_publisher_and_preserves_legacy_title_version_and_icon(self):
+        update = self.source / "updates/65536/romfs"
+        update.mkdir(parents=True)
+        (update / "data").write_bytes(b"patch")
+        original = self.work / "legacy.nup"
+        pack(str(original), str(self.source))
+        icon = image_bytes()
+        replace_metadata(original, [serialize_block({2: icon, 3: b"1.2.3", 4: b"Game title"}),
+                                    serialize_block({0: b"NPDM", 7: b"update dump"})])
+        self.app.copy_nup_button.invoke()
+        self.app.editor_source.set(str(original))
+        self.assertEqual(self.app.editor_title.get(), "Game title")
+        self.assertEqual(self.app.editor_version.get(), "1.2.3")
+        self.assertEqual(self.app.editor_publisher.get(), "")
+        self.app.editor_publisher.set("New studio")
+
+        with patch("windows_gui.messagebox.askyesno", return_value=True), patch("windows_gui.messagebox.showinfo"), patch("windows_gui.messagebox.showerror") as error:
+            self.app.editor_update_button.invoke()
+            deadline = time.monotonic() + 10
+            while self.app.busy and time.monotonic() < deadline:
+                self.root.update()
+                time.sleep(0.01)
+            self.assertFalse(self.app.busy)
+            error.assert_not_called()
+
+        blocks = snapshot(original)[4]
+        self.assertEqual(parse_block(blocks[0], normalize=False),
+                         {3: icon, 4: b"1.2.3", 5: b"Game title", 6: b"New studio"})
+        self.assertEqual(parse_block(blocks[1], normalize=False), {1: b"NPDM", 8: b"update dump"})
 
     def test_editor_mode_buttons_and_source_update_preserve_special_characters(self):
         original = self.work / "source & $ café.nup"

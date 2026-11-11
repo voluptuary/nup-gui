@@ -34,7 +34,8 @@ def _old_block(r: NupReader, pkg: PackageInfo) -> bytes:
     return bytes(r._mm[pkg.meta_offset:pkg.meta_offset + pkg.meta_size])
 
 
-def _resolve_package(r: NupReader, package: str | None) -> PackageInfo:
+def _resolve_package(r: NupReader, package: str | None,
+                     records: list[dict[int, bytes]]) -> PackageInfo:
     """Explicit kind name / index, else the package already carrying app
     metadata, else base, else the first package (SPEC §5.1)."""
     if package is not None:
@@ -52,8 +53,8 @@ def _resolve_package(r: NupReader, package: str | None) -> PackageInfo:
                 return found
         raise SystemExit(f"edit: unknown package {package!r} "
                          f"(kind name or index expected)")
-    for p in r.packages:
-        if p.meta_size and any(t in M.parse_block(_old_block(r, p)) for t in APP_TLVS):
+    for p in sorted(r.packages, key=lambda p: p.kind != F.KIND_BASE):
+        if any(t in records[p.index] for t in APP_TLVS):
             return p
     return next((p for p in r.packages if p.kind == F.KIND_BASE), r.packages[0])
 
@@ -97,10 +98,12 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
             original_info = os.fstat(r._fh.fileno())
             original_mode = stat.S_IMODE(original_info.st_mode)
             original_identity = _file_identity(original_info)
-            target = _resolve_package(r, package)
             original_blocks = [_old_block(r, p) for p in r.packages]
-            records = [M.parse_block(block) for block in original_blocks]
-            idx = r.packages.index(target)
+            interpreted = M.package_records(original_blocks)
+            records = [items for items, _ in interpreted]
+            layouts = [shifted for _, shifted in interpreted]
+            target = _resolve_package(r, package, records)
+            idx = target.index
             if app_records:
                 records[idx].update({t: data for t, data in app_records.items()
                                      if t in APP_TLVS})
@@ -111,8 +114,14 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
                 clear_publisher=clear_publisher,
                 clear_display_version=clear_display_version, clear_icon=clear_icon)
 
-            serialized = list(original_blocks)
-            serialized[idx] = M.update_block(original_blocks[idx], records[idx])
+            # Some consumers choose one numbering scheme for the entire
+            # container. Migrating just the edited block can make them read
+            # a newly canonical icon as version text if any type 0 remains.
+            serialized = [
+                M.update_block(block, records[i], shifted=shifted)
+                if i == idx or shifted else block
+                for i, (block, shifted) in enumerate(zip(original_blocks, layouts))
+            ]
             new_tail = b"".join(serialized)
 
             # Metadata offsets do not delimit the file-data region. Only
@@ -177,8 +186,12 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
             # PermissionError (WinError 5).
             r.close()
 
-        with NupReader(tmp):  # structural validation of the result
-            pass
+        with NupReader(tmp) as staged:
+            for i, package_info in enumerate(staged.packages):
+                block = _old_block(staged, package_info)
+                if (block != serialized[i]
+                        or M.parse_block(block, normalize=False) != records[i]):
+                    raise F.NupError(f"package {i}: metadata verification failed before replacing original")
         if validate is not None:
             validate(tmp)
         os.chmod(tmp, original_mode)

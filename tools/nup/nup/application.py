@@ -5,9 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import format as F
-from .access import meta_records
 from .icons import image_extension
-from .meta import decode_localized
+from .meta import decode_localized, package_records
 from .read import NupReader
 
 APP_TYPES = (F.TLV_NACP, F.TLV_TITLE_NAME, F.TLV_PUBLISHER, F.TLV_DISPLAY_VERSION,
@@ -72,9 +71,12 @@ def from_records(records: dict[int, bytes]) -> ApplicationMetadata:
 
 def read_application(reader: NupReader) -> ApplicationMetadata:
     records: dict[int, bytes] = {}
+    blocks = [bytes(reader._mm[p.meta_offset:p.meta_offset + p.meta_size])
+              for p in reader.packages]
+    interpreted = package_records(blocks)
     packages = sorted(reader.packages, key=lambda pkg: pkg.kind != F.KIND_BASE)
     for package in packages:
-        for kind, payload in from_records(dict(meta_records(reader, package))).records.items():
+        for kind, payload in from_records(interpreted[package.index][0]).records.items():
             records.setdefault(kind, payload)
     return from_records(records)
 
@@ -186,12 +188,12 @@ def nacp_metadata(data: bytes) -> ApplicationMetadata:
 def dump_application(source: Path, package_dirs: list[str]) -> ApplicationMetadata:
     from .icons import detect_icon
     from .roundtrip import read_sidecar
-    from .meta import parse_block
     preserved = read_sidecar(str(source))
     if preserved:
         records = {}
-        for package in sorted(preserved["packages"], key=lambda p: p["kind"] != F.KIND_BASE):
-            for kind, payload in parse_block(package["raw_block"]).items():
+        packages = sorted(preserved["packages"], key=lambda p: p["kind"] != F.KIND_BASE)
+        for block_records, _ in package_records([p["raw_block"] for p in packages]):
+            for kind, payload in block_records.items():
                 records.setdefault(kind, payload)
         return from_records(records)
     metadata = ApplicationMetadata()

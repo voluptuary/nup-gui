@@ -39,27 +39,62 @@ def parse_block(block: bytes, *, normalize: bool = True) -> dict[int, bytes]:
             raise F.NupError("meta TLV overruns block")
         out.setdefault(t, bytes(block[pos + 8:pos + 8 + size]))
         pos += 8 + size
-    if not normalize:
-        return out
+    return _canonical_records(out) if normalize and _is_shifted(out) else out
+
+
+def _printable_text(data: bytes) -> bool:
+    try:
+        text = data.decode("utf-8").strip("\0").strip()
+        return bool(text) and text.isprintable()
+    except UnicodeDecodeError:
+        return False
+
+
+def _is_shifted(records: dict[int, bytes], *, container_shifted: bool = False) -> bool:
     # Releases before the SPEC numbering fix wrote types 0..9 instead of 1..10.
-    # Only migrate when the bytes identify that layout; never guess from text
-    # fields alone. SOURCE_PACKAGE_PATH (0x000B) was already correct.
+    # Use an identifying record or a container-wide marker. Ordinary app
+    # text alone is ambiguous. SOURCE_PACKAGE_PATH (0x000B) was already correct.
     from .icons import image_extension
-    legacy = 0 in out or image_extension(out.get(2, b"")) is not None
-    if not legacy and 7 in out and 8 not in out and len(out[7]) != 32:
-        try:
-            legacy = bool(out[7]) and out[7].decode("utf-8").isprintable()
-        except UnicodeDecodeError:
-            pass
-    if legacy:
-        out = {(t + 1 if 0 <= t <= 9 else t): data for t, data in out.items()}
-    return out
+    if 0 in records or image_extension(records.get(2, b"")):
+        return True
+    # A previous partial migration can leave canonical blocks alongside shifted
+    # ones. Preserve identifiable canonical records even when another block
+    # carries a type-zero marker.
+    if (2 in records or 10 in records or len(records.get(7, b"")) == 32
+            or image_extension(records.get(3, b""))
+            or _printable_text(records.get(8, b""))):
+        return False
+    if 7 in records and 8 not in records:
+        build_or_dump = records[7]
+        if _printable_text(build_or_dump):
+            return True
+    return container_shifted
 
 
-def update_block(block: bytes, records: dict[int, bytes]) -> bytes:
+def _canonical_records(records: dict[int, bytes]) -> dict[int, bytes]:
+    return {(kind + 1 if 0 <= kind <= 9 else kind): data for kind, data in records.items()}
+
+
+def package_records(blocks: list[bytes]) -> list[tuple[dict[int, bytes], bool]]:
+    """Read package metadata with the numbering context of the whole container."""
+    raw = [parse_block(block, normalize=False) for block in blocks]
+    container_shifted = any(0 in records for records in raw)
+    result = []
+    for records in raw:
+        shifted = _is_shifted(records, container_shifted=container_shifted)
+        result.append((_canonical_records(records) if shifted else records, shifted))
+    return result
+
+
+def update_block(block: bytes, records: dict[int, bytes], *, shifted: bool | None = None) -> bytes:
     """Change selected TLVs without discarding unknown/duplicate records."""
-    previous = parse_block(block)
-    legacy = previous != parse_block(block, normalize=False)
+    previous = parse_block(block, normalize=False)
+    if shifted is None:
+        shifted = _is_shifted(previous)
+    if shifted:
+        if 9 in previous and 10 in previous:
+            raise F.NupError("shifted metadata has conflicting localized icon IDs")
+        previous = _canonical_records(previous)
     changes = {t for t in previous.keys() | records.keys()
                if previous.get(t) != records.get(t)}
     seen = set()
@@ -68,7 +103,7 @@ def update_block(block: bytes, records: dict[int, bytes]) -> bytes:
     while pos + 8 <= len(block):
         kind, reserved, size = F._tlv_s.unpack_from(block, pos)
         payload = block[pos + 8:pos + 8 + size]
-        kind = kind + 1 if legacy and 0 <= kind <= 9 else kind
+        kind = kind + 1 if shifted and 0 <= kind <= 9 else kind
         if kind not in changes:
             out += F._tlv_s.pack(kind, reserved, size) + payload
         elif kind in records and kind not in seen:
@@ -80,7 +115,10 @@ def update_block(block: bytes, records: dict[int, bytes]) -> bytes:
     # SPEC §5 ends parsing when fewer than eight bytes remain. Keep that
     # opaque tail (including legacy alignment padding) after any new records.
     out += block[pos:]
-    return bytes(out)
+    result = bytes(out)
+    if parse_block(result, normalize=False) != records:
+        raise F.NupError("metadata verification failed: serialized TLV IDs or payloads differ")
+    return result
 
 
 def serialize_block(records: dict[int, bytes]) -> bytes:

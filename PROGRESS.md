@@ -2,6 +2,33 @@
 
 This document records meaningful changes and enhancements made to `nup-gui` and its tooling.
 
+## Metadata numbering repair across editing and creation (2026-11-11)
+
+- Reproduced the reported symptom with synthetic legacy base/update metadata
+  and BananaNative's actual Java reader at
+  `7ea6a966e4be51d5e2ac0be08543ff44c036e447`. Editing only the base migrated
+  its IDs while the update retained a type-zero marker. The reader then
+  interpreted the canonical icon as version text and the version as the title.
+  The user's original package was unavailable for direct diagnosis.
+- Metadata editing now interprets package blocks together and migrates shifted
+  blocks throughout the container. Staged verification checks literal IDs and
+  payloads. Update source also verifies the effective displayed fields before
+  replacing the original. Canonical NACP, build IDs and localized artwork remain
+  identifiable alongside legacy blocks.
+- Create NUP also migrates preserved legacy blocks before metadata overrides,
+  mixed numbering, added packages or split output can change their context.
+  Consistently numbered, unmodified dump round trips retain raw metadata.
+  Created GUI packages receive structural validation before publication.
+- Regression coverage includes filling each empty title, publisher, version and
+  icon field, target transfers, mixed-layout repair, split/rebundled dumps,
+  preservation of duplicate/unknown records and opaque tails, and rollback on
+  validation failure. The Java reader accepted the four repaired edit cases,
+  four Create NUP cases and the repaired transfer.
+- All 83 Linux/Xvfb tests passed. Windows Python under Wine passed 80 tests
+  with three capability skips. Rebuilt the Windows x64 executable and ZIP;
+  the executable passed the message-loop smoke test, and the ZIP passed
+  integrity and executable-byte comparison checks.
+
 ## 0.4.0 extraction regression and Codespace diagnosis (2026-11-11)
 
 - Fixed the Zstandard decoder window units. The streaming decoder received

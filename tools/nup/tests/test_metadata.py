@@ -128,6 +128,158 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(records[3], icon)
         self.assertEqual(records[5], b"Edited")
 
+    def test_filling_each_empty_field_migrates_all_shifted_package_blocks(self):
+        update = self.source / "updates/65536/romfs"
+        update.mkdir(parents=True)
+        (update / "update").write_bytes(b"patch")
+        icon = image_bytes()
+        icon_path = self.work / "icon.jpg"
+        icon_path.write_bytes(icon)
+        fields = {3: ("icon", str(icon_path), icon), 4: ("display_version", "1.2.3", b"1.2.3"),
+                  5: ("name", "Game title", b"Game title"), 6: ("publisher", "Studio", b"Studio")}
+        unknown = struct.pack("<HHI", 0xF001, 0, 3) + b"dup"
+        tail = b"\xff\x00"
+        for missing, (argument, value, _) in fields.items():
+            with self.subTest(field=argument):
+                path = self.package(f"fill-{argument}.nup")
+                expected = {kind: payload for kind, (_, _, payload) in fields.items()}
+                base = serialize_block({kind - 1: payload for kind, payload in expected.items()
+                                        if kind != missing})
+                shifted_update = serialize_block({0: b"NPDM", 7: b"update dump", 0xF001: b"opaque"})
+                replace_metadata(path, [base, shifted_update + unknown + tail])
+                original = snapshot(path)
+
+                edit(str(path), **{argument: value})
+
+                result = snapshot(path)
+                self.assertEqual(result[:4], original[:4])
+                # Read the literal IDs a SPEC consumer sees, with no legacy fallback.
+                self.assertEqual(parse_block(result[4][0], normalize=False), expected)
+                self.assertEqual(result[4][1],
+                                 serialize_block({1: b"NPDM", 8: b"update dump", 0xF001: b"opaque"})
+                                 + unknown + tail)
+                self.assertEqual(verify(str(path), deep=True), (True, []))
+
+    def test_edit_repairs_partial_migration_without_shifting_canonical_base(self):
+        update = self.source / "updates/65536/romfs"
+        update.mkdir(parents=True)
+        (update / "update").write_bytes(b"patch")
+        path = self.package()
+        base = {3: image_bytes(), 4: b"1.2.3", 5: b"Game title"}
+        replace_metadata(path, [serialize_block(base), serialize_block({0: b"NPDM", 7: b"update dump"})])
+
+        edit(str(path), publisher="Studio")
+
+        blocks = snapshot(path)[4]
+        self.assertEqual(parse_block(blocks[0], normalize=False), {**base, 6: b"Studio"})
+        self.assertEqual(parse_block(blocks[1], normalize=False), {1: b"NPDM", 8: b"update dump"})
+
+    def test_migration_preserves_canonical_nacp_build_id_and_localized_blocks(self):
+        update = self.source / "updates/65536/romfs"
+        update.mkdir(parents=True)
+        (update / "update").write_bytes(b"patch")
+        for base in ({2: bytes(0x4000)}, {7: b"b" * 32},
+                     {10: _encode_localized({"en": image_bytes()})}):
+            with self.subTest(types=list(base)):
+                path = self.package(f"canonical-{next(iter(base))}.nup")
+                replace_metadata(path, [serialize_block(base), serialize_block({0: b"NPDM"})])
+                edit(str(path), publisher="Studio")
+                self.assertEqual([parse_block(block, normalize=False) for block in snapshot(path)[4]],
+                                 [{**base, 6: b"Studio"}, {1: b"NPDM"}])
+
+    def test_edit_rejects_well_formed_staged_metadata_with_wrong_ids(self):
+        from unittest.mock import patch
+        path = self.package()
+        original = path.read_bytes()
+        with patch("nup.edit.M.update_block", return_value=serialize_block({5: b"New studio"})):
+            with self.assertRaisesRegex(F.NupError, "metadata verification failed"):
+                edit(str(path), publisher="New studio")
+        self.assertEqual(path.read_bytes(), original)
+        self.assertFalse(list(path.parent.glob(".nup-edit-*.tmp")))
+
+    def test_repacking_shifted_metadata_with_overrides_or_package_changes(self):
+        update = self.source / "updates/65536/romfs"
+        update.mkdir(parents=True)
+        (update / "update").write_bytes(b"patch")
+        original = self.package()
+        icon = image_bytes()
+        base = {3: icon, 4: b"1.2.3", 5: b"Game title"}
+        shifted = [serialize_block({kind - 1: payload for kind, payload in base.items()}),
+                   serialize_block({0: b"NPDM", 7: b"update dump"})]
+        replace_metadata(original, shifted)
+        dump = self.work / "restored"
+        with NupReader(str(original)) as reader:
+            extract_dump(reader, str(dump))
+        update_records = {1: b"NPDM", 8: b"update dump"}
+
+        unchanged = self.work / "unchanged.nup"
+        pack(str(unchanged), str(dump))
+        self.assertEqual(snapshot(unchanged)[4], shifted)
+
+        updated = self.work / "updated.nup"
+        pack_atomic(str(updated), str(dump), publisher="New studio")
+        self.assertEqual([parse_block(block, normalize=False) for block in snapshot(updated)[4]],
+                         [{**base, 6: b"New studio"}, update_records])
+        self.assertEqual(snapshot(updated)[:4], snapshot(original)[:4])
+
+        split_base = self.work / "split.nup"
+        pack(str(split_base), str(dump), split=True)
+        split_update = self.work / "split.update.65536.nup"
+        self.assertEqual(parse_block(snapshot(split_base)[4][0], normalize=False), base)
+        self.assertEqual(parse_block(snapshot(split_update)[4][0], normalize=False), update_records)
+
+        addon = dump / "dlc/040074a01bf13001/0/romfs"
+        addon.mkdir(parents=True)
+        (addon / "extra").write_bytes(b"extra content")
+        bundled = self.work / "bundled.nup"
+        pack(str(bundled), str(dump))
+        self.assertEqual([parse_block(block, normalize=False) for block in snapshot(bundled)[4][:2]],
+                         [base, update_records])
+        self.assertEqual(verify(str(bundled), deep=True), (True, []))
+
+    def test_transfer_migrates_shifted_blocks_in_target(self):
+        source = self.package("metadata.nup")
+        replace_metadata(source, [serialize_block({6: b"New studio"})])
+        update = self.source / "updates/65536/romfs"
+        update.mkdir(parents=True)
+        (update / "update").write_bytes(b"patch")
+        target = self.package("target.nup")
+        icon = image_bytes()
+        replace_metadata(target, [serialize_block({2: icon, 3: b"1.2.3", 4: b"Game title"}),
+                                  serialize_block({0: b"NPDM", 7: b"update dump"})])
+
+        copy_application(str(source), str(target))
+
+        self.assertEqual([parse_block(block, normalize=False) for block in snapshot(target)[4]],
+                         [{3: icon, 4: b"1.2.3", 5: b"Game title", 6: b"New studio"},
+                          {1: b"NPDM", 8: b"update dump"}])
+
+    def test_create_repairs_preserved_mixed_numbering_without_overrides(self):
+        update = self.source / "updates/65536/romfs"
+        update.mkdir(parents=True)
+        (update / "update").write_bytes(b"patch")
+        original = self.package()
+        base = {3: image_bytes(), 4: b"1.2.3", 5: b"Game title"}
+        replace_metadata(original, [serialize_block(base), serialize_block({0: b"NPDM"})])
+        restored = self.work / "mixed-dump"
+        with NupReader(str(original)) as reader:
+            extract_dump(reader, str(restored))
+        output = self.work / "repaired.nup"
+
+        pack_atomic(str(output), str(restored))
+
+        self.assertEqual([parse_block(block, normalize=False) for block in snapshot(output)[4]],
+                         [base, {1: b"NPDM"}])
+
+    def test_create_validation_failure_leaves_no_published_package(self):
+        from unittest.mock import patch
+        output = self.work / "failed-create.nup"
+        with patch("nup.operations.NupReader", side_effect=F.NupError("invalid staged package")):
+            with self.assertRaisesRegex(F.NupError, "invalid staged package"):
+                pack_atomic(str(output), str(self.source), publisher="Studio")
+        self.assertFalse(output.exists())
+        self.assertFalse(list(self.work.glob(".nup-pack-*")))
+
     def test_complete_roundtrip_preserves_raw_metadata_identity_and_tree(self):
         (self.source / "updates/65536/romfs").mkdir(parents=True)
         (self.source / "updates/65536/romfs/update").write_bytes(b"patch")
